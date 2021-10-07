@@ -54,9 +54,6 @@ def get_args_parser():
                 + torchvision_archs + torch.hub.list("facebookresearch/xcit"),
         help="""Name of architecture to train. For quick experiments with ViTs,
         we recommend using vit_tiny or vit_small.""")
-    
-    parser.add_argument('--pretrained_weights', default='', type=str, help="")
-    
     parser.add_argument('--patch_size', default=16, type=int, help="""Size in pixels
         of input square patches - default 16 (for 16x16 patches). Using smaller
         values leads to better performance but requires more memory. Applies only
@@ -134,12 +131,16 @@ def get_args_parser():
     parser.add_argument('--local_crops_scale', type=float, nargs='+', default=(0.05, 0.4),
         help="""Scale range of the cropped image before resizing, relatively to the origin image.
         Used for small local view cropping of multi-crop.""")
-    parser.add_argument('--vit_image_size', type=int, default=224, help="""image size that enters vit; 
+    parser.add_argument('--vit_image_size', type=int, default=256, help="""image size that enters vit; 
         must match with patch_size: num_patches = (vit_image_size/patch_size)**2""")
+    parser.add_argument('--image_size', type=int, default=32, help="""image size of in-distibution data. 
+        negative samples are first resized to image_size and then inflated to vit_image_size. This
+        ensures that aux samples have same resolution as in-dist samples""")
+
 
 
     # Misc
-    parser.add_argument('--data_path', default='/home/shared/DataSets/', type=str,
+    parser.add_argument('--data_path', default='/home/shared/DataSets/ILSVRC/Data/CLS-LOC/train/', type=str,
         help='Please specify path to the ImageNet training data.')
     parser.add_argument('--output_dir', default=".", type=str, help='Path to save logs and checkpoints.')
     parser.add_argument('--saveckp_freq', default=20, type=int, help='Save checkpoint every x epochs.')
@@ -148,7 +149,6 @@ def get_args_parser():
     parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
-    parser.add_argument("--master_port", default=23459, type=int, help="")    
     return parser
 
 
@@ -164,10 +164,22 @@ def train_dino(args):
     transform = DataAugmentation_Contrast(
         args.global_crops_scale,
         args.local_crops_scale,
-        args.local_crops_number, 
-        args.vit_image_size,        
+        args.local_crops_number,
+        args.image_size,
+        args.vit_image_size, 
+        aux = False,
     )
-    dataset = datasets.CIFAR100(root=args.data_path,
+
+    transform_aux = DataAugmentation_Contrast(
+        args.global_crops_scale,
+        args.local_crops_scale,
+        args.local_crops_number,
+        args.image_size,
+        args.vit_image_size,      
+        aux = True,
+    )
+
+    dataset = datasets.CIFAR10(root='./data',
                                 train=True,
                                 download=True, transform=transform)   
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
@@ -179,32 +191,36 @@ def train_dino(args):
         pin_memory=True,
         drop_last=True,
     )
-    print(f"Data loaded: there are {len(dataset)} images.")
+    print(f"In-distribution Data loaded: there are {len(dataset)} images.")
 
+    dataset_aux = datasets.ImageFolder(args.data_path, transform=transform_aux)
+    sampler_aux = torch.utils.data.DistributedSampler(dataset_aux, shuffle=True)
+    data_loader_aux = torch.utils.data.DataLoader(
+        dataset_aux,
+        sampler=sampler_aux,
+        batch_size=args.batch_size_per_gpu,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        drop_last=True,
+    )
+    print(f"Aux Data loaded: there are {len(dataset_aux)} images.")
+    print("len dataloader",len(data_loader))
+    
+    
     # ============ building student and teacher networks ... ============
     # we changed the name DeiT-S for ViT-S to avoid confusions
     args.arch = args.arch.replace("deit", "vit")
     # if the network is a Vision Transformer (i.e. vit_tiny, vit_small, vit_base)
     if args.arch in vits.__dict__.keys():
         student = vits.__dict__[args.arch](
-            #img_size=[args.vit_image_size],
+            img_size=[args.vit_image_size],
             patch_size=args.patch_size,
             drop_path_rate=args.drop_path_rate,  # stochastic depth
         )
-#         utils.load_pretrained_weights(student, 
-#                                       args.pretrained_weights, 
-#                                       'student',
-#                                       args.arch, 
-#                                       args.patch_size) 
-        
-        teacher = vits.__dict__[args.arch](patch_size=args.patch_size,
-                                           #img_size=[args.vit_image_size],
-                                          )
-#         utils.load_pretrained_weights(teacher,                                       
-#                                       args.pretrained_weights, 
-#                                       'teacher',
-#                                       args.arch, 
-#                                       args.patch_size)        
+        teacher = vits.__dict__[args.arch](
+            img_size = [args.vit_image_size],
+            patch_size=args.patch_size,
+        )
         embed_dim = student.embed_dim
     # if the network is a XCiT
     elif args.arch in torch.hub.list("facebookresearch/xcit"):
@@ -231,8 +247,6 @@ def train_dino(args):
         teacher,
         DINOHead(embed_dim, args.out_dim, args.use_bn_in_head),
     )
-    print("#"*4 , "Teacher Structure", "#"*4)
-    print(teacher)
     # move networks to gpu
     student, teacher = student.cuda(), teacher.cuda()
     # synchronize batch norms (if any)
@@ -257,21 +271,13 @@ def train_dino(args):
     # ============ preparing loss ... ============
     dino_loss = DINOLoss(
         args.out_dim,
-        args.local_crops_number + 2,  # total number of crops = 2 global crops  + local_crops_number 
+        args.batch_size_per_gpu,  # total number of crops = 2 global crops  + local_crops_number 
         args.warmup_teacher_temp,
         args.teacher_temp,
         args.warmup_teacher_temp_epochs,
         args.epochs,
     ).cuda()
 
-    dino_loss_c = DINOLoss(
-        args.out_dim,
-        args.local_crops_number + 2,  # total number of crops = 2 global crops + local_crops_number
-        args.warmup_contrast_temp, 
-        args.contrast_temp,
-        args.warmup_contrast_temp_epochs,
-        args.epochs,
-    ).cuda()
     
 
     # ============ preparing optimizer ... ============
@@ -322,8 +328,8 @@ def train_dino(args):
     for epoch in range(start_epoch, args.epochs):
         data_loader.sampler.set_epoch(epoch)
         # ============ training one epoch of DINO ... ============
-        train_stats = train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, dino_loss_c,
-            data_loader, optimizer, lr_schedule, wd_schedule, momentum_schedule,
+        train_stats = train_one_epoch(student, teacher, teacher_without_ddp, dino_loss,
+            data_loader, data_loader_aux, optimizer, lr_schedule, wd_schedule, momentum_schedule,
             epoch, fp16_scaler, args)
 
         # ============ writing logs ... ============
@@ -345,17 +351,31 @@ def train_dino(args):
         if utils.is_main_process():
             with (Path(args.output_dir) / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
+                
+        torch.set_printoptions(profile="full")
+        if epoch % 20 == 0:
+            print("probs pos", torch.topk(dino_loss.probs_pos * 100, 200)[0])
+            print("probs neg", torch.topk(dino_loss.probs_neg * 100, 200, largest=False)[0])
+        torch.set_printoptions(profile="default")
+
+
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
 
-def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, dino_loss_c, data_loader,
+def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loader, data_loader_aux,
                     optimizer, lr_schedule, wd_schedule, momentum_schedule,epoch,
                     fp16_scaler, args):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
-    for it, (images, labs) in enumerate(metric_logger.log_every(data_loader, 10, header)):
+    for it, (images, _) in enumerate(metric_logger.log_every(data_loader, 10, header)):
+        try:
+            images_aux, _ = next(iter_aux)    # domain knowlege e.g. images of natural objects 
+        except:  
+            iter_aux = iter(data_loader_aux)
+            images_aux, _ = next(iter_aux)
+       
         # update weight decay and learning rate according to their schedule
         it = len(data_loader) * epoch + it  # global training iteration        
         for i, param_group in enumerate(optimizer.param_groups):
@@ -365,17 +385,25 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, dino_loss_
 
         # move images to gpu
         images = [im.cuda(non_blocking=True) for im in images]
+        images_aux = [im.cuda(non_blocking=True) for im in images_aux]
+
         
         # teacher and student forward passes + compute dino loss
         with torch.cuda.amp.autocast(fp16_scaler is not None):
-            num_crops = args.local_crops_number + 2
-            teacher_output = teacher(images[:2]+images[num_crops:num_crops + 2])  # 2 pos + 2 neg  global views pass through the teacher
-            student_output = student(images)  
-            student_output = student_output.chunk(2)  # split in positive and negative samples
-            teacher_output = teacher_output.chunk(2)
-            loss = dino_loss(student_output[0], teacher_output[0], epoch)  # pos loss
-            #loss = loss + dino_loss_c(student_output[1], teacher_output[1], epoch)  # neg loss
-            loss = loss + dino_loss_c(student_output[1], teacher_output[0], epoch)
+            # number of crops per dataset: e.g. crops_freq_teacher = [3,1,1] => 3 x pos , 1 x in-dist neg , 1 x aux neg
+            crops_freq_teacher = data_loader.dataset.transform.crops_freq_teacher + \
+                                        data_loader_aux.dataset.transform.crops_freq_teacher                                       
+            crops_freq_student = data_loader.dataset.transform.crops_freq_student + \
+                                        data_loader_aux.dataset.transform.crops_freq_student 
+            images_pos = images[:crops_freq_student[0]]    # postives
+            images_neg = images[crops_freq_student[0]:]    # in-dist negatives (e.g. rotated view of pos sample) 
+            #teacher_output = teacher(images_pos[:crops_freq_teacher[0]] + images_neg[:crops_freq_teacher[1]])          
+            teacher_output = teacher(images_pos[:crops_freq_teacher[0]] \
+                                     + images_neg[:crops_freq_teacher[1]] + images_aux[:crops_freq_teacher[2]])          
+            #student_output = student(images_pos + images_neg)  
+            student_output = student(images_pos + images_neg + images_aux)  
+            #loss = dino_loss(student_output, teacher_output, crops_freq_student[:2], crops_freq_teacher[:2], epoch)  
+            loss = dino_loss(student_output, teacher_output, crops_freq_student, crops_freq_teacher, epoch)  
 
             
 
@@ -421,14 +449,18 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, dino_loss_
 
 
 class DINOLoss(nn.Module):
-    def __init__(self, out_dim, ncrops, warmup_teacher_temp, teacher_temp,
+    def __init__(self, out_dim, batchsize, warmup_teacher_temp, teacher_temp,
                  warmup_teacher_temp_epochs, nepochs, student_temp=0.1,
                  center_momentum=0.9):
         super().__init__()
         self.student_temp = student_temp
+        self.probs_temp = 0.1
         self.center_momentum = center_momentum
-        self.ncrops = ncrops
+        self.probs_momentum = 0.998
+        self.batchsize = batchsize
         self.register_buffer("center", torch.zeros(1, out_dim))  
+        self.register_buffer("probs_pos", torch.ones(1, out_dim)/out_dim)  
+        self.register_buffer("probs_neg", torch.ones(1, out_dim)/out_dim)  
         # we apply a warm up for the teacher temperature because
         # a too high temperature makes the training instable at the beginning
         self.teacher_temp_schedule = np.concatenate((
@@ -437,49 +469,70 @@ class DINOLoss(nn.Module):
             np.ones(nepochs - warmup_teacher_temp_epochs) * teacher_temp
         ))
 
-    def forward(self, student_output, teacher_output, epoch):
+    def forward(self, student_output, teacher_output, crops_freq_student, crops_freq_teacher, epoch):
         """
         Cross-entropy between softmax outputs of the teacher and student networks.
         """
+        # total number of crops
+        n_crops_student = len(student_output)//self.batchsize   
+        n_crops_teacher = len(teacher_output)//self.batchsize
+
         student_out = student_output / self.student_temp  
-        student_out = student_out.chunk(self.ncrops)
-       
+        student_out = student_out.chunk(n_crops_student)
         temp = self.teacher_temp_schedule[epoch]
-        teacher_out = F.softmax((teacher_output - self.center) / temp, dim=-1)
-        teacher_out = teacher_out.detach().chunk(2)
-        total_loss = 0
+        teacher_probs = F.softmax((teacher_output - self.center) / temp, dim=-1)
+        teacher_out = teacher_probs.detach().chunk(n_crops_teacher)
+        out_dim = teacher_out[0].shape[-1]    
+        total_loss = 0.
         n_loss_terms = 0
-        num_class = teacher_out[0].shape[-1]
-        for iq, qt in enumerate(teacher_out):
-            for v in range(len(student_out)):
-                if v == iq:
-                    # we skip cases where student and teacher operate on the same view
-                    continue       
-                loss = torch.sum(-qt * F.log_softmax(student_out[v], dim=-1), dim=-1)
-                total_loss += loss.mean()
-                n_loss_terms += 1
-        
+        end_idx_s = torch.cumsum(torch.tensor(crops_freq_student), 0)
+        for t in range(crops_freq_teacher[0]):    # loop over pos teacher crops
+            start_s = 0
+            for k, end_s in enumerate(end_idx_s):    # loop over datasets
+                for s in range(start_s, end_s):    # loop over student crops
+                    # pos loss
+                    if k == 0:
+                        if s == t: # we skip cases where student and teacher operate on the same view
+                            continue
+                        loss = torch.sum(-teacher_out[t] * F.log_softmax(student_out[s], dim=-1), dim=-1) 
+                    # in-dist neg loss
+                    elif k == 1:
+                        loss = 0.5/out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
+                        #loss = 0.5/out_dim * torch.sum(-(1.-teacher_out[t]) * F.log_softmax(student_out[s], dim=-1), dim=-1)             
+                        #loss = 0.5/out_dim * (1.-probs_pos) * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)             
+                    # aux neg loss
+                    else:
+                        loss = 0.5/out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
+                        #loss = 0.5/out_dim * torch.sum(-(1.-teacher_out[t]) * F.log_softmax(student_out[s], dim=-1), dim=-1)             
+                    total_loss += len(crops_freq_student)*loss.mean()  # scaling loss with batchsize
+                    n_loss_terms += 1
+                start_s = end_s  
         total_loss /= n_loss_terms 
-        self.update_center(teacher_output)
-        return total_loss
+        self.center = self.update_ema(teacher_output[:crops_freq_teacher[0]], self.center, self.center_momentum)
+        self.probs_pos = self.update_ema(teacher_probs[:crops_freq_teacher[0]], self.probs_pos, self.probs_momentum)
+        self.probs_neg = self.update_ema(teacher_probs[crops_freq_teacher[0]:], self.probs_neg, self.probs_momentum)
+        return total_loss 
 
     @torch.no_grad()
-    def update_center(self, teacher_output):
+    def update_ema(self, output, ema, momentum):
         """
-        Update center used for teacher output.
+        Update exponential moving aveages for teacher output.
         """
-        batch_center = torch.sum(teacher_output, dim=0, keepdim=True)
+        batch_center = torch.sum(output, dim=0, keepdim=True)
         dist.all_reduce(batch_center)
-        batch_center = batch_center / (len(teacher_output) * dist.get_world_size())
+        batch_center = batch_center / (len(output) * dist.get_world_size())
 
         # ema update
-        self.center = self.center * self.center_momentum + batch_center * (1 - self.center_momentum)
+        return ema * momentum + batch_center * (1 - momentum)
 
 
+
+        
 
     
 class DataAugmentation_Contrast(object):
-    def __init__(self, global_crops_scale, local_crops_scale, local_crops_number, vit_image_size):  
+    def __init__(self, global_crops_scale, local_crops_scale, local_crops_number, image_size, vit_image_size, aux=False): 
+        self.aux = aux
         flip_and_color_jitter = transforms.Compose([
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomApply(
@@ -501,79 +554,126 @@ class DataAugmentation_Contrast(object):
             return TF.rotate(x, angle)
 
 
+        # no crop
+        self.no_transfo = transforms.Compose([
+            transforms.Resize((vit_image_size, vit_image_size), interpolation=Image.BICUBIC),
+            normalize,
+        ])      
+
+        # neg no crop
+        self.no_transfo_neg = transforms.Compose([
+            transforms.Resize((vit_image_size, vit_image_size), interpolation=Image.BICUBIC),
+            rotate,
+            normalize,
+        ])      
         # first global crop
         self.global_transfo1 = transforms.Compose([
+            transforms.Resize((image_size, image_size), interpolation=Image.BICUBIC),
+            #transforms.Resize((vit_image_size, vit_image_size), interpolation=Image.BICUBIC),
             transforms.RandomResizedCrop(vit_image_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            utils.GaussianBlur(1.0),
+            utils.GaussianBlur(1.0, image_size=vit_image_size),
             normalize,
         ])
         # second global crop
         self.global_transfo2 = transforms.Compose([
+            transforms.Resize((image_size, image_size), interpolation=Image.BICUBIC),
+            #transforms.Resize((vit_image_size, vit_image_size), interpolation=Image.BICUBIC),
             transforms.RandomResizedCrop(vit_image_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            utils.GaussianBlur(0.1),
+            utils.GaussianBlur(0.1, image_size=vit_image_size),
             utils.Solarization(0.2),
             normalize,
-        ])
-        
+        ])        
         # neg first global crop
         self.global_transfo1_neg = transforms.Compose([
+            transforms.Resize((image_size, image_size), interpolation=Image.BICUBIC),
+            #transforms.Resize((vit_image_size, vit_image_size), interpolation=Image.BICUBIC),
             transforms.RandomResizedCrop(vit_image_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             rotate,
-            #TF.vflip,
             flip_and_color_jitter,
-            utils.GaussianBlur(1.0),
+            utils.GaussianBlur(1.0, image_size=vit_image_size),
             normalize,
         ])
         # neg second global crop
         self.global_transfo2_neg = transforms.Compose([
+            transforms.Resize((image_size, image_size), interpolation=Image.BICUBIC),
+            #transforms.Resize((vit_image_size, vit_image_size), interpolation=Image.BICUBIC),
             transforms.RandomResizedCrop(vit_image_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             rotate,
-            #TF.vflip,
             flip_and_color_jitter,
-            utils.GaussianBlur(0.1),
+            utils.GaussianBlur(0.1, image_size=vit_image_size),
             utils.Solarization(0.2),
             normalize,
         ])
-        
-
         # transformation for the local small crops
-        self.local_crops_number = local_crops_number
         self.local_transfo = transforms.Compose([
+            transforms.Resize((image_size, image_size), interpolation=Image.BICUBIC),
+            #transforms.Resize((vit_image_size, vit_image_size), interpolation=Image.BICUBIC),
             transforms.RandomResizedCrop(vit_image_size//2, scale=local_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            utils.GaussianBlur(p=0.5),
+            utils.GaussianBlur(p=0.5, image_size=vit_image_size),
             normalize,
-        ])
-        
+        ])       
         # neg transformation for the local small crops
         self.local_transfo_neg = transforms.Compose([
+            transforms.Resize((image_size, image_size), interpolation=Image.BICUBIC),
+            #transforms.Resize((vit_image_size, vit_image_size), interpolation=Image.BICUBIC),
             transforms.RandomResizedCrop(vit_image_size//2, scale=local_crops_scale, interpolation=Image.BICUBIC),
             rotate,
             #TF.vflip,
             flip_and_color_jitter,
-            utils.GaussianBlur(p=0.5),
+            utils.GaussianBlur(p=0.5, image_size=vit_image_size),
             normalize,
         ])
+        self.local_crops_number = local_crops_number
+        # initalize crops_freq_teacher/crops_freq_student (number of crops in teacher/student output per dataset)
+        img_tensor = torch.ByteTensor(vit_image_size, vit_image_size, 3).random_().numpy()
+        self.get_crops(TF.to_pil_image(img_tensor))
         
 
-
-    def __call__(self, image):
+    def get_crops(self, image):
         crops = []
-        # positive crops
-        crops.append(self.global_transfo1(image))
-        crops.append(self.global_transfo2(image))
-        for _ in range(self.local_crops_number):
-            crops.append(self.local_transfo(image))
-        # negative crops
-        crops.append(self.global_transfo1_neg(image))
-        crops.append(self.global_transfo2_neg(image))
-        for _ in range(self.local_crops_number):
-            crops.append(self.local_transfo_neg(image))       
+        self.crops_freq_teacher = []
+        self.crops_freq_student = []
+        if self.aux == True:
+            # aux crops
+            flip = random.choice([0, 1])
+            if flip:
+                crops.append(self.global_transfo1_neg(image))
+            else:
+                crops.append(self.global_transfo2_neg(image))
+            self.crops_freq_teacher.append(len(crops))
+            for _ in range(self.local_crops_number):
+                crops.append(self.local_transfo_neg(image))
+            self.crops_freq_student.append(len(crops))
+        else:   
+            # pos crops
+            crops.append(self.global_transfo1(image))
+            crops.append(self.global_transfo2(image))
+            self.crops_freq_teacher.append(len(crops))
+            for _ in range(self.local_crops_number):
+                crops.append(self.local_transfo(image))
+            self.crops_freq_student.append(len(crops))
+            n_pos_crops = len(crops)
+            # in-dist neg crops 
+            flip = random.choice([0, 1])
+            if flip:
+                crops.append(self.global_transfo1_neg(image))
+            else:
+                crops.append(self.global_transfo2_neg(image))
+            self.crops_freq_teacher.append(len(crops) - n_pos_crops)
+            for _ in range(self.local_crops_number):
+                crops.append(self.local_transfo_neg(image))       
+            self.crops_freq_student.append(len(crops) - n_pos_crops)
         return crops
+         
+        
+    def __call__(self, image):
+        return self.get_crops(image)
 
 
+                                          
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('DINO', parents=[get_args_parser()])
