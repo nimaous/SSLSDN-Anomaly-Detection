@@ -13,6 +13,7 @@
 # limitations under the License.
 """
 Misc functions.
+
 Mostly copy-paste from torchvision references or other public repos like DETR:
 https://github.com/facebookresearch/detr/blob/master/util/misc.py
 """
@@ -36,10 +37,10 @@ class GaussianBlur(object):
     """
     Apply Gaussian Blur to the PIL image.
     """
-    def __init__(self, p=0.5, radius_min=0.1, radius_max=2.):
+    def __init__(self, p=0.5, image_size=224, radius_min=0.1, radius_max=2.):
         self.prob = p
-        self.radius_min = radius_min
-        self.radius_max = radius_max
+        self.radius_min = radius_min * (image_size/224.)
+        self.radius_max = radius_max * (image_size/224.)
 
     def __call__(self, img):
         do_it = random.random() <= self.prob
@@ -72,7 +73,6 @@ def load_pretrained_weights(model, pretrained_weights, checkpoint_key, model_nam
         state_dict = torch.load(pretrained_weights, map_location="cpu")
         if checkpoint_key is not None and checkpoint_key in state_dict:
             print(f"Take key {checkpoint_key} in provided checkpoint dict")
-            print("######## Loading Checkpoint Successful #################")
             state_dict = state_dict[checkpoint_key]
         # remove `module.` prefix
         state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
@@ -460,11 +460,11 @@ def init_distributed_mode(args):
         print('Will run the code on one GPU.')
         args.rank, args.gpu, args.world_size = 0, 0, 1
         os.environ['MASTER_ADDR'] = '127.0.0.1'
-        os.environ['MASTER_PORT'] = args.master_port
-        print("###LOLO" * 10)
+        os.environ['MASTER_PORT'] = '29500'
     else:
         print('Does not support training without GPU.')
         sys.exit(1)
+
     dist.init_process_group(
         backend="nccl",
         init_method=args.dist_url,
@@ -571,52 +571,14 @@ class LARS(torch.optim.Optimizer):
                 p.add_(mu, alpha=-g['lr'])
 
 
-# class MultiCropWrapper(nn.Module):
-#     """
-#     Perform forward pass separately on each resolution input.
-#     The inputs corresponding to a single resolution are clubbed and single
-#     forward is run on the same resolution inputs. Hence we do several
-#     forward passes = number of different resolutions used. We then
-#     concatenate all the output features and run the head forward on these
-#     concatenated features.
-#     """
-#     def __init__(self, backbone, head):
-#         super(MultiCropWrapper, self).__init__()
-#         # disable layers dedicated to ImageNet labels classification
-#         backbone.fc, backbone.head = nn.Identity(), nn.Identity()
-#         self.backbone = backbone
-#         self.head = head
-
-#     def forward(self, x):
-#         # convert to list
-#         if not isinstance(x, list):
-#             x = [x]
-#         idx_crops = torch.cumsum(torch.unique_consecutive(
-#             torch.tensor([inp.shape[-1] for inp in x]),
-#             return_counts=True,
-#         )[1], 0)
-#         start_idx, output = 0, torch.empty(0).to(x[0].device)
-#         for end_idx in idx_crops:
-#             _out = self.backbone(torch.cat(x[start_idx: end_idx]))
-#             # The output is a tuple with XCiT model. See:
-#             # https://github.com/facebookresearch/xcit/blob/master/xcit.py#L404-L405
-#             if isinstance(_out, tuple):
-#                 _out = _out[0]
-#             # accumulate outputs
-#             output = torch.cat((output, _out))
-#             start_idx = end_idx
-#         # Run the head forward on the concatenated features.
-#         return self.head(output)
-
 class MultiCropWrapper(nn.Module):
-    """        
-        All global views from each group are gathered together
-        and passed to the model. Same for the local views. 
-        Model output is then rearranged into the original input arrangment. 
-        the code is applicable for any number of local, global groups. 
-        e.x 
-        one positive group and 2 negative group results in
-        idx_crops of [2, 10, 12, 20, 22, 30] 
+    """
+    Perform forward pass separately on each resolution input.
+    The inputs corresponding to a single resolution are clubbed and single
+    forward is run on the same resolution inputs. Hence we do several
+    forward passes = number of different resolutions used. We then
+    concatenate all the output features and run the head forward on these
+    concatenated features.
     """
     def __init__(self, backbone, head):
         super(MultiCropWrapper, self).__init__()
@@ -625,49 +587,30 @@ class MultiCropWrapper(nn.Module):
         self.backbone = backbone
         self.head = head
 
+
     def forward(self, x):
         # convert to list
         if not isinstance(x, list):
-            x = [x]
-        idx_crops = torch.cumsum(torch.unique_consecutive(
-            torch.tensor([inp.shape[-1] for inp in x]),
-            return_counts=True,
-        )[1], 0)
-        """
-        idx_crops is the accumulative frequency of each view
-        possible values   : [1]
-                          : [2, 10]
-                          : [2, 10, 12, 20] 
-                          : [2, 10, 12, 20, 22, 30]
-        """
-        if len(idx_crops) == 1:
-            out = self.backbone(torch.cat(x))
-            return self.head(out) 
-        
-        assert len(idx_crops) % 2 == 0 
-        num_group = len(idx_crops)//2
-        start_idx, output = 0, torch.empty(0).to(x[0].device)
-        g_win , l_win = idx_crops[0:2] # number global views per group
-        l_win = l_win - g_win #number local views per group
-        bs = x[0].size(0) 
-        g_end = idx_crops[::2]  #[2, 12, 22 , ...]
-        l_end = idx_crops[1::2] #[10, 20, 30, ...]
-        glob_x = []
-        loc_x = []
-        _ = [glob_x.extend(x[i-g_win: i]) for i in g_end] #grouping global views
-        _ = [loc_x.extend(x[i-l_win: i]) for i in l_end]  #grouping local views 
-        loc_out = self.backbone(torch.cat(loc_x))
-        glob_out = self.backbone(torch.cat(glob_x))
-        output = self.head(torch.cat((glob_out, loc_out), dim=0))
-        
-        ##### Rearranging into the original input arrangement 
-        
-        l_start = [(g_win*num_group) + (l_win*i) for i in range(num_group)] 
-        g_start = [(g_win*i)  for i in range(num_group)]  #[0,2,4,..]
-        ordered_lst = [torch.cat((output[bs*g_start[i]: bs*(g_start[i]+g_win)], 
-                                  output[bs*l_start[i]: bs*(l_start[i]+l_win)])) for i in range(num_group)]
-        return torch.cat(ordered_lst)
-    
+            x = [x]  
+        shapes_sorted, sort_idx = torch.sort(torch.Tensor([inp.shape[-1] for inp in x]))
+        idx_crops = torch.cumsum(torch.unique_consecutive(shapes_sorted, return_counts=True)[1], 0)
+        start_idx = 0
+        output = torch.empty((len(x), len(x[0]), self.backbone.embed_dim)).to(x[0].device)  
+        for end_idx in idx_crops:
+            batch_idx = sort_idx[start_idx:end_idx]  # The indices of tensors of this shape
+            _out = self.backbone(torch.cat([x[i] for i in batch_idx]))   # Batch them together
+            # The output is a tuple with XCiT model. See:
+            # https://github.com/facebookresearch/xcit/blob/master/xcit.py#L404-L405
+            if isinstance(_out, tuple):
+                _out = _out[0]
+            # accumulate outputs
+            _out = torch.stack(_out.chunk(len(batch_idx)))
+            output.index_copy_(0, batch_idx.cuda(), _out)
+            start_idx = end_idx
+        # Run the head forward on the concatenated features.
+        return self.head(torch.cat(torch.unbind(output)))
+
+
 def get_params_groups(model):
     regularized = []
     not_regularized = []
