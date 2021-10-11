@@ -289,3 +289,20 @@ class DINOHead(nn.Module):
         x = nn.functional.normalize(x, dim=-1, p=2)
         x = self.last_layer(x)
         return x
+
+class RotationHead(nn.Module):
+    def __init__(self, in_dim, out_dim, hidden_dim=512):
+        super().__init__()
+        self.mlp = nn.Sequential( nn.Linear(in_dim, hidden_dim),
+                                    nn.GELU(),
+                                    nn.Linear(hidden_dim, out_dim))
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        return self.mlp(x)

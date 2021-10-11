@@ -33,6 +33,9 @@ import torch.distributed as dist
 from PIL import ImageFilter, ImageOps
 
 
+
+
+
 class GaussianBlur(object):
     """
     Apply Gaussian Blur to the PIL image.
@@ -580,12 +583,13 @@ class MultiCropWrapper(nn.Module):
     concatenate all the output features and run the head forward on these
     concatenated features.
     """
-    def __init__(self, backbone, head):
+    def __init__(self, backbone, head, head_aux = None):
         super(MultiCropWrapper, self).__init__()
         # disable layers dedicated to ImageNet labels classification
         backbone.fc, backbone.head = nn.Identity(), nn.Identity()
         self.backbone = backbone
         self.head = head
+        self.head_aux = head_aux
 
 
     def forward(self, x):
@@ -599,6 +603,7 @@ class MultiCropWrapper(nn.Module):
         for end_idx in idx_crops:
             batch_idx = sort_idx[start_idx:end_idx]  # The indices of tensors of this shape
             _out = self.backbone(torch.cat([x[i] for i in batch_idx]))   # Batch them together
+            
             # The output is a tuple with XCiT model. See:
             # https://github.com/facebookresearch/xcit/blob/master/xcit.py#L404-L405
             if isinstance(_out, tuple):
@@ -608,7 +613,15 @@ class MultiCropWrapper(nn.Module):
             output.index_copy_(0, batch_idx.cuda(), _out)
             start_idx = end_idx
         # Run the head forward on the concatenated features.
-        return self.head(torch.cat(torch.unbind(output)))
+        final_out = self.head(torch.cat(torch.unbind(output)))
+
+        if self.head_aux is not None:
+            # stack crops in dim=1 so at to have [batch, crops, out_dim]
+            aux_out = self.head_aux(torch.cat(torch.unbind(output) , dim=0) ) 
+            return final_out, aux_out 
+        
+        return final_out
+
 
 
 def get_params_groups(model):
