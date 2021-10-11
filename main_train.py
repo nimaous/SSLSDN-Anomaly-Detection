@@ -77,15 +77,7 @@ def get_args_parser():
         starting with the default value of 0.04 and increase this slightly if needed.""")
     parser.add_argument('--warmup_teacher_temp_epochs', default=0, type=int,
                         help='Number of warmup epochs for the teacher temperature (Default: 30).')
-    parser.add_argument('--warmup_contrast_temp', default=0.12, type=float,
-                        help="""Initial value for the teacher temperature: 0.04 works well in most cases.
-        Try decreasing it if the training loss does not decrease.""")
-    parser.add_argument('--contrast_temp', default=0.24, type=float, help="""Final value (after linear warmup)
-        of the teacher temperature. For most experiments, anything above 0.07 is unstable. We recommend
-        starting with the default value of 0.04 and increase this slightly if needed.""")
-    parser.add_argument('--warmup_contrast_temp_epochs', default=0, type=int,
-                        help='Number of warmup epochs for the teacher temperature (Default: 30).')
-
+    
     # Training/Optimization parameters
     parser.add_argument('--use_fp16', type=utils.bool_flag, default=True, help="""Whether or not
         to use half precision for training. Improves training time and memory requirements,
@@ -449,7 +441,6 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
     if utils_dino.is_main_process():
         try:
             writer.add_scalar("Train loss epoch", torch.Tensor([metric_logger.meters['loss'].global_avg]), epoch)
-            # KNN fit here...
         except:
             sys.exit(1)
 
