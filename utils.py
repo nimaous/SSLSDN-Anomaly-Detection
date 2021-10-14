@@ -71,16 +71,27 @@ class Solarization(object):
             return img
 
 
-def load_pretrained_weights(model, pretrained_weights, checkpoint_key, model_name, patch_size):
+def load_pretrained_weights(model, pretrained_weights, checkpoint_key, model_name, patch_size, remove_head=True):
     if os.path.isfile(pretrained_weights):
         state_dict = torch.load(pretrained_weights, map_location="cpu")
         if checkpoint_key is not None and checkpoint_key in state_dict:
             print(f"Take key {checkpoint_key} in provided checkpoint dict")
             state_dict = state_dict[checkpoint_key]
-        # remove `module.` prefix
-        state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
-        # remove `backbone.` prefix induced by multicrop wrapper
-        state_dict = {k.replace("backbone.", ""): v for k, v in state_dict.items()}
+            if not remove_head:
+                msg = model.load_state_dict(state_dict, strict=False)
+                print('Pretrained weights found at {} and loaded with msg: {}'.format(pretrained_weights, msg))
+                return
+
+            print('Removing DINO head weights...')
+            for param_tensor in list(state_dict.keys()):
+                if 'head' in param_tensor:
+                    state_dict.pop(param_tensor)
+
+
+            # remove `module.` prefix
+            state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+            # remove `backbone.` prefix induced by multicrop wrapper
+            state_dict = {k.replace("backbone.", ""): v for k, v in state_dict.items()}
         msg = model.load_state_dict(state_dict, strict=False)
         print('Pretrained weights found at {} and loaded with msg: {}'.format(pretrained_weights, msg))
     else:
@@ -94,16 +105,6 @@ def load_pretrained_weights(model, pretrained_weights, checkpoint_key, model_nam
             url = "dino_vitbase16_pretrain/dino_vitbase16_pretrain.pth"
         elif model_name == "vit_base" and patch_size == 8:
             url = "dino_vitbase8_pretrain/dino_vitbase8_pretrain.pth"
-        elif model_name == "xcit_small_12_p16":
-            url = "dino_xcit_small_12_p16_pretrain/dino_xcit_small_12_p16_pretrain.pth"
-        elif model_name == "xcit_small_12_p8":
-            url = "dino_xcit_small_12_p8_pretrain/dino_xcit_small_12_p8_pretrain.pth"
-        elif model_name == "xcit_medium_24_p16":
-            url = "dino_xcit_medium_24_p16_pretrain/dino_xcit_medium_24_p16_pretrain.pth"
-        elif model_name == "xcit_medium_24_p8":
-            url = "dino_xcit_medium_24_p8_pretrain/dino_xcit_medium_24_p8_pretrain.pth"
-        elif model_name == "resnet50":
-            url = "dino_resnet50_pretrain/dino_resnet50_pretrain.pth"
         if url is not None:
             print("Since no pretrained weights have been provided, we load the reference pretrained DINO weights.")
             state_dict = torch.hub.load_state_dict_from_url(url="https://dl.fbaipublicfiles.com/dino/" + url)
