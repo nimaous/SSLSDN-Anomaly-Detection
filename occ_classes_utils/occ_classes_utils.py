@@ -1,3 +1,4 @@
+import os
 import vision_transformer as vits
 import sys
 import utils
@@ -12,6 +13,8 @@ from torchvision.transforms import InterpolationMode
 from torch.utils.data import Dataset
 
 import numpy as np
+import matplotlib.pyplot as plt
+import torch
 
 class IndexData(Dataset):
     def __init__(self, args, transform, train=True, label=False, type="cifar10"):
@@ -158,76 +161,85 @@ def extract_features(model, data_loader, args, crops_number=1, test=True):
 
 def load_model(args, chkpt_path, remove_head=True):
     # ============ building network ... ============
-    if "vit" in args.arch:
-        num_classes = 0
+    try:
+        if "vit" in args.arch:
+            num_classes = 0
+            model = vits.__dict__[args.arch](patch_size=args.patch_size,
+                                            img_size=[args.vit_image_size],
+                                            num_classes=num_classes)
+            model = build_wrapper(model, args, remove_head)  
+        else:
+            print(f"Architecture {args.arch} non supported")
+            sys.exit(1)
+        
+        utils.load_pretrained_weights(model, chkpt_path,
+                                    args.checkpoint_key,
+                                    args.arch, args.patch_size, remove_head=remove_head)
+    except:
         model = vits.__dict__[args.arch](patch_size=args.patch_size,
-                                         img_size=[args.vit_image_size],
-                                         num_classes=num_classes)
-        if not remove_head:
-            model = DINOWrapper(model, DINOHead(
-                model.embed_dim,
-                args.pretrained_out_dim,
-                use_bn=args.use_bn_in_head,
-                norm_last_layer=args.norm_last_layer))
-        print(f"Model {args.arch} {args.patch_size}x{args.patch_size} built.")
-    else:
-        print(f"Architecture {args.arch} non supported")
-        sys.exit(1)
-    
-    model.cuda() if torch.cuda.is_available() else model.cpu()
-    
-    utils.load_pretrained_weights(model, chkpt_path,
-                                  args.checkpoint_key,
-                                  args.arch, args.patch_size, remove_head=remove_head)
+                                            num_classes=num_classes)
+        model = build_wrapper(model, args, remove_head)
+
     model.eval()
     return model
 
+def build_wrapper(model, args, remove_head):
+    if not remove_head:
+        model = DINOWrapper(model, DINOHead(
+            model.embed_dim,
+            args.pretrained_out_dim,
+            use_bn=args.use_bn_in_head,
+            norm_last_layer=args.norm_last_layer))
+        print(f"Model {args.arch} {args.patch_size}x{args.patch_size} built.")
 
-def truncationTrick(args, chkpt_path, in_ds, num_crop, occupied_classes=True, load=None,temp=0.01):
+    model.cuda() if torch.cuda.is_available() else model.cpu()
+    return model
 
-    if load is None:
-        # load full model with head
-        model = load_model(args, chkpt_path, remove_head=False)
-        print('\n Extracting probabilities...\n')
-        train_features, _ = extract_feature_pipeline(args, model, in_ds, normalise=False,
-                                                                train=True, crops_number=num_crop)
+def find_occ_classes(args, num_crop, load=None, temp=0.01, return_class_indices=True):
+    chkpt_path = args.pretrained_weights
+    in_ds = args.train_dataset
+    feat_path = os.path.join(args.data_path, f"train_feats_{in_ds}.obj")
 
-        torch.save(train_features, './train_feats_cifar10.obj')
+
+    if args.load:
+        try:
+            train_features = torch.load(feat_path)
+        except:
+            print('\n\n Train features were not found. Initializing inference in distributed mode')
+            train_features = infer_features(args, chkpt_path, in_ds, num_crop)
     else:
-        train_features = torch.load(load)
+        train_features = infer_features(args, chkpt_path, in_ds, num_crop)
+    
+    occ_classes, list_occ_img_indices = get_occupied_classes(train_features, temp=temp, path=args.data_path)
+
+    if return_class_indices:
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Resize([128, 128],
+                              interpolation=Image.BICUBIC)])
+        dataset = IndexData(args, transform, train=True, label=True, type=in_ds)
+        for (class_id, c, prob_val) in list_occ_img_indices:
+            img, label = dataset[c]
+            title = f"max soft class{class_id}, prob {prob_val} , human_lb {label}"
+            img_name = f"im{c}_id{class_id}_human_lb{label}"
+            
+            show(img, img_name, path=args.data_path, title=title)
+    
+    if not args.load:
+        dist.barrier()
 
 
-    occ_classes = get_occupied_classes(train_features, temp=temp)
 
-    train_features_norm = norm_temp_softmax_features(train_features, temp)
-
-    # find median feature index from rows
-
-    (_, indices) = torch.median(train_features_norm, dim=0) #check
-    print("indices shape",indices.shape)
-    unique_indices = torch.unique(indices, sorted=True)
-    print("indices unique shape:", unique_indices.shape) # 56
-
-    if occupied_classes:
-        return 
-
-    train_features_final, train_labels_final = extract_feature_pipeline(args, model.backbone, in_ds, normalise=True,
+def infer_features(args, chkpt_path, in_ds, num_crop):
+    utils.init_distributed_mode(args)
+    cudnn.benchmark = True
+    # load full model with head
+    model = load_model(args, chkpt_path, remove_head=False)
+    print('\n Extracting probabilities...\n')
+    train_features, _ = extract_feature_pipeline(args, model, in_ds, normalise=False,
                                                             train=True, crops_number=num_crop)
-    
-    print('Extracted train_features from feature space:', train_features.shape)
-    x_medians = train_features[indices,...]
-    print("medians shape:",x_medians.shape)
-    
-    # find distance from query to all class x_medians vectors
-
-    # calculated per class prob weighted sum of class
-
-
-    # remove train_features
-
-    return train_features_final, train_labels_final
-
-
+    torch.save(train_features, feat_path)
+    return train_features
 
 
 
@@ -245,26 +257,63 @@ class DINOWrapper(nn.Module):
         y = self.backbone(x)
         return self.head(y)
 
-import torch
-import numpy as np
+
 
 
 def norm_temp_softmax_features(train_features, temp):
     center = train_features.mean(dim=0)
     return torch.nn.functional.softmax((train_features-center)/temp,dim=1)
 
-def get_occupied_classes(train_features, temp=0.07, plot=True):
+def get_occupied_classes(train_features, temp=0.07, plot=True , path='./', return_class_indices=True):
     train_features_norm = norm_temp_softmax_features(train_features, temp)
     
     # class probabilities
     class_weights = train_features_norm.mean(dim=0)
+    threshhold = class_weights.mean()
 
-    occupied_classes = (class_weights>class_weights.mean()).sum()
+    occupied_classes = (class_weights>threshhold).sum()
     if plot:
-        import matplotlib.pyplot as plt
+        
         sorted_np_array = np.sort(class_weights.cpu().view(-1).numpy())[-occupied_classes:]
         ids = [i for i in range(sorted_np_array.shape[0])]
         _ = plt.bar(ids,sorted_np_array)
-        plt.savefig('fig_occupied_classes_box_plot.png')
+        plt.savefig(os.path.join(path, 'fig_occupied_classes_box_plot.png'))
+
+    if return_class_indices:
+        list_out = []
+        chosen_idx = []
+        
+        class_weights[class_weights<threshhold] = 0
+        occ_class_indices = class_weights
+        
+        non_zero_class_indices = list(torch.nonzero(occ_class_indices, as_tuple=True)[0].cpu().numpy())
+        print('non zero res:', non_zero_class_indices)
+        
+
+        values, class_idx_samples = torch.max(train_features_norm, dim=1)
+
+        for c, class_id in enumerate(class_idx_samples):
+            class_id = class_id.item()
+            if occ_class_indices[class_id]>0: # and values[c]>threshhold:
+                if class_id in non_zero_class_indices and class_id not in chosen_idx:
+                    chosen_idx.append(class_id)
+                    prob_val = values[c].item()
+                    list_out.append((class_id, c, prob_val ))
+                    print(c, class_id, prob_val)
+            
+
+                
     
-    return occupied_classes
+    return occupied_classes, list_out
+
+
+
+def show(img, name, save=True, path='./', title='img'):
+    if isinstance(img, list):
+        img = img[0]
+    
+    npimg = img.numpy()
+    plt.imshow(np.transpose(npimg, (1, 2, 0)), interpolation='nearest')
+    plt.title(title)
+    if save:
+        plt.savefig(os.path.join(path, name))

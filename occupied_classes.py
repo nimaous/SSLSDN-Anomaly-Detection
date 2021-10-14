@@ -22,28 +22,34 @@ from sklearn.metrics import roc_auc_score
 import pandas as pd
 import utils
 
-from truncation import *
+from occ_classes_utils import *
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Occupied Classes')
     parser.add_argument('--batch_size_per_gpu', default=1000, type=int, help='Per-GPU batch-size')
     parser.add_argument('--local_view', default=False, type=bool, )
     parser.add_argument('--arch', default='vit_small', type=str, help='Architecture')
-    parser.add_argument('--patch_size', default=4, type=int, help='Patch resolution of the model.')
-    parser.add_argument('--vit_image_size', type=int, default=64, help="""image size that enters vit; 
+    parser.add_argument('--patch_size', default=16, type=int, help='Patch resolution of the model.')
+    parser.add_argument('--vit_image_size', type=int, default=256, help="""image size that enters vit; 
+        must match with patch_size: num_patches = (vit_image_size/patch_size)**2""")
+    parser.add_argument('--image_size', type=int, default=32, help="""image size that enters vit; 
         must match with patch_size: num_patches = (vit_image_size/patch_size)**2""")
     parser.add_argument('--crops_scale', type=float, nargs='+', default=(0.9, 1.),
                         help="""Scale range of the cropped image before resizing, relatively to the origin image. Used for large global view cropping.""")
     parser.add_argument('--crops_number', type=int, default=1,
                         help="""Number of local views to generate. Set this parameter to 0 to disable multi-crop training.""")
 
-    parser.add_argument('--pretrained_weights', default='/home/adaloglo/DINO_AnoDetect/data/checkpoint_dino_vit_s_4octob.pth',
+    parser.add_argument('--pretrained_weights', default='/home/shared/OOD/checkpoints/cifar10/256_16_aux_v3_NegContrast/checkpoint.pth',
                         type=str, help="Path to pretrained weights to evaluate.")
     parser.add_argument('--pretrained_out_dim', default=4096,
                         type=int, help="Pretrained DINO classes used on ssl pretraining.")
     parser.add_argument('--use_bn_in_head', default=False, type=bool)
     parser.add_argument('--norm_last_layer', default=False, type=bool)
-    parser.add_argument('--use_cuda', default=True,
+
+    parser.add_argument('--load', default=True,
+                        type=utils.bool_flag,
+                        help="use the saved features of the last checkpoint")
+    parser.add_argument('--use_cuda', default=False,
                         type=utils.bool_flag,
                         help="Should we store the features on GPU? We recommend setting this to False if you encounter OOM")
 
@@ -58,21 +64,9 @@ if __name__ == '__main__':
                         help="master port for ddp")
     parser.add_argument('--data_path', default='./out_eval/', type=str)
     parser.add_argument('--train_dataset', default='cifar10', type=str)
-    parser.add_argument('--extra_tag', default='_', type=str)
-
-
     args = parser.parse_args()
 
-    utils.init_distributed_mode(args)
-    print("git:\n  {}\n".format(utils.get_sha()))
-    print("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items())))
-    cudnn.benchmark = True
-
-    chkpt_path = args.pretrained_weights
-    in_ds = args.train_dataset
-    model = load_model(args, chkpt_path, remove_head=True)
-
-    truncationTrick(args, chkpt_path, in_ds, num_crop=1,occupied_classes=True)
-    dist.barrier()
+    find_occ_classes(args, num_crop=1, load=True)
+    
 
 

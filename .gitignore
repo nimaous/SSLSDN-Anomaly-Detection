@@ -5,9 +5,14 @@ __pycache__/*
 .idea/
 .idea/*
 .Python
+.vscode
+.vscode/*
 build/
 test_out/
 test_out/*
 data/*
 data
 data/
+out_eval
+out_eval/*
+*.png

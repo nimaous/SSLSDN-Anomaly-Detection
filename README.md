@@ -14,4 +14,12 @@ python -m torch.distributed.launch --master_port 8992 --nproc_per_node=1 main_tr
 
 
 
+### Visualize occupied classes
+check args first ...
+```
+python -m occupied_classes
+```
+
+
+
 
