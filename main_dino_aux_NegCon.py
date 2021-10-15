@@ -1,49 +1,39 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
-# 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-# 
-#     http://www.apache.org/licenses/LICENSE-2.0
-# 
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 import argparse
-import datetime
-import json
-import math
 import os
-import random
 import sys
+import datetime
 import time
+import math
+import json
+import random
 from pathlib import Path
 
 import numpy as np
-import torch
-import torch.backends.cudnn as cudnn
-import torch.distributed as dist
-import torch.nn as nn
-import torch.nn.functional as F
-import torchvision.transforms.functional as TF
 from PIL import Image
-from torch.utils.tensorboard import SummaryWriter
+import torch
+import torch.nn as nn
+import torch.distributed as dist
+import torch.backends.cudnn as cudnn
+import torch.nn.functional as F
 from torchvision import datasets, transforms
 from torchvision import models as torchvision_models
+import torchvision.transforms.functional as TF
+
+from torch.utils.tensorboard import SummaryWriter
+
 
 import utils
 import vision_transformer as vits
-from vision_transformer import DINOHead, RotationHead
-from data_rot_aug import DatasetRotationWrapper
+from vision_transformer import DINOHead
 
 from main_train import get_args_parser, DataAugmentation_Contrast
-from dino_loss import  DINOLossNegCon
+
+from dino_loss import  DINOLossNegCon, DINOLoss_vanilla 
+
 
 torchvision_archs = sorted(name for name in torchvision_models.__dict__
-                           if name.islower() and not name.startswith("__")
-                           and callable(torchvision_models.__dict__[name]))
+    if name.islower() and not name.startswith("__")
+    and callable(torchvision_models.__dict__[name]))
 
 
 def train_dino(args, writer):
@@ -53,21 +43,30 @@ def train_dino(args, writer):
     print("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items())))
     cudnn.benchmark = True
 
+    # ============ preparing data ... ============
+
+    transform = DataAugmentation_Contrast(
+        args.global_crops_scale,
+        args.local_crops_scale,
+        args.local_crops_number,
+        args.image_size,
+        args.vit_image_size,
+        aux=False,
+    )
+
     transform_aux = DataAugmentation_Contrast(
         args.global_crops_scale,
         args.local_crops_scale,
         args.local_crops_number,
         args.image_size,
         args.vit_image_size,
-        aux=True)
+        aux=True,
+    )
 
-    dataset = DatasetRotationWrapper(
-        args.image_size, 
-        args.vit_image_size,
-        args.global_crops_scale, 
-        args.local_crops_scale, 
-        args.local_crops_number)
-
+    # root=args.data_path
+    dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+    # dataset = datasets.ImageFolder(root=args.data_path+'ImageNet30/train/', 
+    #                                              transform=transform)
 
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
     data_loader = torch.utils.data.DataLoader(
@@ -78,9 +77,10 @@ def train_dino(args, writer):
         pin_memory=True,
         drop_last=True,
     )
-    print(f"In-distribution Data loaded: there are {len(dataset)} images.")
+    print(f"In-distriubtion Data loaded: there are {len(dataset)} images.")
 
-    dataset_aux = datasets.ImageFolder(args.data_path, transform=transform_aux)
+    dataset_aux = datasets.ImageFolder(args.data_path,
+                                       transform=transform_aux)
     sampler_aux = torch.utils.data.DistributedSampler(dataset_aux, shuffle=True)
     data_loader_aux = torch.utils.data.DataLoader(
         dataset_aux,
@@ -91,8 +91,9 @@ def train_dino(args, writer):
         drop_last=True,
     )
     print(f"Aux Data loaded: there are {len(dataset_aux)} images.")
-    print("len dataloader", len(data_loader))
 
+
+    print("len dataloader",len(data_loader))
     # ============ building student and teacher networks ... ============
     # we changed the name DeiT-S for ViT-S to avoid confusions
     args.arch = args.arch.replace("deit", "vit")
@@ -104,7 +105,7 @@ def train_dino(args, writer):
             drop_path_rate=args.drop_path_rate,  # stochastic depth
         )
         teacher = vits.__dict__[args.arch](
-            img_size=[args.vit_image_size],
+            img_size = [args.vit_image_size],
             patch_size=args.patch_size,
         )
         embed_dim = student.embed_dim
@@ -123,22 +124,24 @@ def train_dino(args, writer):
         print(f"Unknow architecture: {args.arch}")
 
     # multi-crop wrapper handles forward with inputs of different resolutions
-    rot_head = RotationHead(
-        embed_dim,
-        2, # out dim
-    )
-    studen_head = DINOHead(
+    head_1 = DINOHead(
         embed_dim,
         args.out_dim,
         use_bn=args.use_bn_in_head,
         norm_last_layer=args.norm_last_layer,
     )
 
-    student = utils.MultiCropWrapper(student, studen_head, rot_head)
-    teacher = utils.MultiCropWrapper(
-        teacher,
-        DINOHead(embed_dim, args.out_dim, args.use_bn_in_head),
+    rotation_out_dim = 64
+    head_2 = DINOHead(
+        embed_dim,
+        rotation_out_dim,
+        use_bn=args.use_bn_in_head,
+        norm_last_layer=args.norm_last_layer,
     )
+
+    student = MultiCropDoubleHeadWrapper(student, head_1, head_2)
+    teacher = MultiCropDoubleHeadWrapper(teacher, head_1, head_2)
+    
     # move networks to gpu
     student, teacher = student.cuda(), teacher.cuda()
     # synchronize batch norms (if any)
@@ -147,28 +150,38 @@ def train_dino(args, writer):
         teacher = nn.SyncBatchNorm.convert_sync_batchnorm(teacher)
 
         # we need DDP wrapper to have synchro batch norms working...
-        teacher = nn.parallel.DistributedDataParallel(teacher, device_ids=[args.gpu])
+        teacher = nn.parallel.DistributedDataParallel(teacher, device_ids=[args.gpu], find_unused_parameters=True)
         teacher_without_ddp = teacher.module
     else:
         # teacher_without_ddp and teacher are the same thing
         teacher_without_ddp = teacher
-    student = nn.parallel.DistributedDataParallel(student, device_ids=[args.gpu])
+    student = nn.parallel.DistributedDataParallel(student, device_ids=[args.gpu], find_unused_parameters=True)
     # teacher and student start with the same weights
-    teacher_without_ddp.load_state_dict(student.module.state_dict(), strict=False)
+    teacher_without_ddp.load_state_dict(student.module.state_dict())
     # there is no backpropagation through the teacher, so no need for gradients
     for p in teacher.parameters():
         p.requires_grad = False
     print(f"Student and Teacher are built: they are both {args.arch} network.")
 
     # ============ preparing loss ... ============
-    dino_loss = DINOLossNegCon(
+    dino_loss = DINOLoss_vanilla(
         args.out_dim,
-        args.batch_size_per_gpu,  # total number of crops = 2 global crops  + local_crops_number 
+        args.batch_size_per_gpu,
         args.warmup_teacher_temp,
         args.teacher_temp,
         args.warmup_teacher_temp_epochs,
         args.epochs,
     ).cuda()
+
+    dino_loss_neg = DINOLoss_vanilla(
+        rotation_out_dim,
+        args.batch_size_per_gpu,  
+        args.warmup_teacher_temp, 
+        args.teacher_temp,
+        args.warmup_teacher_temp_epochs,
+        args.epochs,
+    ).cuda()
+    
 
     # ============ preparing optimizer ... ============
     params_groups = utils.get_params_groups(student)
@@ -218,10 +231,9 @@ def train_dino(args, writer):
     for epoch in range(start_epoch, args.epochs):
         data_loader.sampler.set_epoch(epoch)
         # ============ training one epoch of DINO ... ============
-        train_stats = train_one_epoch(student, teacher, teacher_without_ddp, dino_loss,
-                                      data_loader, data_loader_aux, optimizer, lr_schedule, wd_schedule,
-                                      momentum_schedule,
-                                      epoch, fp16_scaler, args, writer)
+        train_stats = train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, dino_loss_neg,
+            data_loader, data_loader_aux, optimizer, lr_schedule, wd_schedule, momentum_schedule,
+            epoch, fp16_scaler, args)
 
         # ============ writing logs ... ============
         save_dict = {
@@ -242,32 +254,24 @@ def train_dino(args, writer):
         if utils.is_main_process():
             with (Path(args.output_dir) / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
-
-        torch.set_printoptions(profile="full")
-        if epoch % 20 == 0:
-            print("probs pos", torch.topk(dino_loss.probs_pos * 100, 200)[0])
-            print("probs neg", torch.topk(dino_loss.probs_neg * 100, 200, largest=False)[0])
-        torch.set_printoptions(profile="default")
-
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
 
-def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loader, data_loader_aux,
-                    optimizer, lr_schedule, wd_schedule, momentum_schedule, epoch,
-                    fp16_scaler, args, writer):
+def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, dino_loss_neg, data_loader, data_loader_aux,
+                    optimizer, lr_schedule, wd_schedule, momentum_schedule,epoch,
+                    fp16_scaler, args):
     metric_logger = utils.MetricLogger(delimiter="  ")
-    CE_rot = torch.nn.CrossEntropyLoss()
     header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
-    for it, (images, labels, rot_labels) in enumerate(metric_logger.log_every(data_loader, 10, header)):
+    bs = args.batch_size_per_gpu
+    for it, (images, _) in enumerate(metric_logger.log_every(data_loader, 10, header)):
         try:
-            images_aux, _ = next(iter_aux)  # domain knowlege e.g. images of natural objects
-        except:
+            images_aux, _ = next(iter_aux)    # domain knowlege e.g. images of natural objects 
+        except:  
             iter_aux = iter(data_loader_aux)
             images_aux, _ = next(iter_aux)
-
-        
+       
         # update weight decay and learning rate according to their schedule
         it = len(data_loader) * epoch + it  # global training iteration        
         for i, param_group in enumerate(optimizer.param_groups):
@@ -277,37 +281,40 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
 
         # move images to gpu
         images = [im.cuda(non_blocking=True) for im in images]
-        images_aux = [im.cuda(non_blocking=True) for im in images_aux]
-        in_dist_images = len(images)
+        #images_aux = [im.cuda(non_blocking=True) for im in images_aux]
 
+        
         # teacher and student forward passes + compute dino loss
         with torch.cuda.amp.autocast(fp16_scaler is not None):
-            # number of crops per dataset: e.g. crops_freq_teacher = [3,1,1] => 3 x pos , 1 x in-dist neg , 1 x aux neg
-            crops_freq_teacher = data_loader.dataset.crops_freq_teacher + \
+            # number of crops per dataset
+            # e.g. crops_freq_teacher = [3,1,1] => 3 x pos , 1 x in-dist neg , 1 x aux neg
+            crops_freq_teacher = data_loader.dataset.transform.crops_freq_teacher + \
                                  data_loader_aux.dataset.transform.crops_freq_teacher
-
-            crops_freq_student = data_loader.dataset.crops_freq_student + \
-                                 data_loader_aux.dataset.transform.crops_freq_student
-            images_pos = images[:crops_freq_student[0]]  # postives
-            images_neg = images[crops_freq_student[0]:]  # in-dist negatives (e.g. rotated view of pos sample)
-
-
-            teacher_output = teacher(images_pos[:crops_freq_teacher[0]] \
-                                     + images_neg[:crops_freq_teacher[1]] + images_aux[:crops_freq_teacher[2]])
             
-            student_output , rotations_output  = student(images_pos + images_neg + images_aux)
+            crops_freq_student = data_loader.dataset.transform.crops_freq_student + \
+                                 data_loader_aux.dataset.transform.crops_freq_student
+            
+            # positives
+            images_pos_student = images[:crops_freq_student[0]]  
+            # in-dist negatives (e.g. rotated view of pos sample)
+            images_neg_student = images[crops_freq_student[0]:]  
 
-            rotations_indist = rotations_output[:args.batch_size_per_gpu*in_dist_images]
+            # concat image lists: 
+            images_pos_teacher = images_pos_student[:crops_freq_teacher[0]]
+            images_neg_teacher = images_neg_student[:crops_freq_teacher[1]]
+            
+            # forward to multi-crop wrapper
+            teacher_out_1, teacher_out_2 = teacher(images_pos_teacher, images_neg_teacher)
+            student_out_1, student_out_2  = student(images_pos_student, images_neg_student)
 
-            rot_labels = torch.cat(rot_labels, dim=0).cuda()
-            dino_loss_val = dino_loss(student_output, teacher_output, crops_freq_student, crops_freq_teacher, epoch)
+            loss_dino = dino_loss(student_out_1, teacher_out_1, epoch)
+            loss_rot = dino_loss_neg(student_out_2, teacher_out_2, epoch)
+            loss = loss_dino + loss_rot
 
-            rot_loss = CE_rot(rotations_indist, rot_labels)
-            loss = dino_loss_val + 0.5*rot_loss
-
-        loss_val = loss.item()
-        if not math.isfinite(loss_val):
-            print("Loss is {}, stopping training".format(loss.item()), force=True)
+            
+        total_loss = loss.item()
+        if not math.isfinite(total_loss):
+            print("Loss is {}, stopping training".format(total_loss), force=True)
             sys.exit(1)
 
         # student update
@@ -338,31 +345,75 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
 
         # logging
         torch.cuda.synchronize()
-        metric_logger.update(loss=loss_val)
+        metric_logger.update(loss=total_loss)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(wd=optimizer.param_groups[0]["weight_decay"])
 
         if utils.is_main_process():
-            writer.add_scalar("Train loss step", loss_val, it)
+            writer.add_scalar("Train loss step", total_loss, it)
             writer.add_scalar("LR", optimizer.param_groups[0]["lr"], it)
-            writer.add_scalar("dino loss ", dino_loss_val.item(), it)
-            writer.add_scalar("rotation CE loss ", rot_loss.item(), it)
-            
-            # KNN stuff will be stored here
-
+            writer.add_scalar("dino loss ", loss_dino.item(), it)
+            writer.add_scalar("rotation neg soft CE loss", loss_rot.item(), it)
+        
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
 
-    if utils_dino.is_main_process():
+    if utils.is_main_process():
         try:
             writer.add_scalar("Train loss epoch", torch.Tensor([metric_logger.meters['loss'].global_avg]), epoch)
-            # KNN fit here...
         except:
             sys.exit(1)
 
+    
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
+
+class MultiCropDoubleHeadWrapper(nn.Module):
+    """
+    Supports double head for positives and negatives
+    """
+    def __init__(self, backbone, head, head_aux = None):
+        super(MultiCropDoubleHeadWrapper, self).__init__()
+        # disable layers dedicated to ImageNet labels classification
+        backbone.fc, backbone.head = nn.Identity(), nn.Identity()
+        self.backbone = backbone
+        self.head = head
+        self.head_aux = head_aux
+
+    def forward_backbone(self,x):
+        shapes_sorted, sort_idx = torch.sort(torch.Tensor([inp.shape[-1] for inp in x]))
+        idx_crops = torch.cumsum(torch.unique_consecutive(shapes_sorted, return_counts=True)[1], 0)
+        start_idx = 0
+        output = torch.empty((len(x), len(x[0]), self.backbone.embed_dim)).to(x[0].device)  
+        for end_idx in idx_crops:
+            batch_idx = sort_idx[start_idx:end_idx]  # The indices of tensors of this shape
+            _out = self.backbone(torch.cat([x[i] for i in batch_idx]))   # Batch them together
+            
+            # The output is a tuple with XCiT model. See:
+            # https://github.com/facebookresearch/xcit/blob/master/xcit.py#L404-L405
+            if isinstance(_out, tuple):
+                _out = _out[0]
+            # accumulate outputs
+            _out = torch.stack(_out.chunk(len(batch_idx)))
+            output.index_copy_(0, batch_idx.cuda(), _out)
+            start_idx = end_idx
+        return torch.cat(torch.unbind(output))
+
+    def forward(self, x, y=None):
+        # convert to list
+        if not isinstance(x, list):
+            x = [x]  
+        x1 = self.forward_backbone(x)
+        x1 = self.head(x1)
+        if y is not None:
+            if not isinstance(x, list):
+                y = [y]
+            y1 = self.forward_backbone(y)
+            y1 = self.head_aux(y1)
+            return x1,y1
+
+        return x1
 
 if __name__ == '__main__':
 

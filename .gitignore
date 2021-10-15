@@ -15,4 +15,6 @@ data
 data/
 out_eval
 out_eval/*
+out/*
+out/
 *.png
