@@ -358,7 +358,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, dino_loss_
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
 
-    if utils_dino.is_main_process():
+    if utils.is_main_process():
         try:
             writer.add_scalar("Train loss epoch", torch.Tensor([metric_logger.meters['loss'].global_avg]), epoch)
         except:
