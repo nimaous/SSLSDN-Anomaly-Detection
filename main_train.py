@@ -36,6 +36,7 @@ from torchvision import models as torchvision_models
 import utils
 import vision_transformer as vits
 from vision_transformer import DINOHead
+from dino_loss import  DINOLossNegCon
 
 torchvision_archs = sorted(name for name in torchvision_models.__dict__
                            if name.islower() and not name.startswith("__")
@@ -47,11 +48,10 @@ def get_args_parser():
 
     # Model parameters
     parser.add_argument('--arch', default='vit_small', type=str,
-                        choices=['vit_tiny', 'vit_small', 'vit_base', 'xcit', 'deit_tiny', 'deit_small'] \
-                                + torchvision_archs + torch.hub.list("facebookresearch/xcit"),
+                        choices=['vit_tiny', 'vit_small', 'vit_base', 'xcit', 'deit_tiny', 'deit_small'],
                         help="""Name of architecture to train. For quick experiments with ViTs,
         we recommend using vit_tiny or vit_small.""")
-    parser.add_argument('--patch_size', default=16, type=int, help="""Size in pixels
+    parser.add_argument('--patch_size', default=8, type=int, help="""Size in pixels
         of input square patches - default 16 (for 16x16 patches). Using smaller
         values leads to better performance but requires more memory. Applies only
         for ViTs (vit_tiny, vit_small and vit_base). If <16, we recommend disabling
@@ -120,7 +120,7 @@ def get_args_parser():
     parser.add_argument('--local_crops_scale', type=float, nargs='+', default=(0.05, 0.4),
                         help="""Scale range of the cropped image before resizing, relatively to the origin image.
         Used for small local view cropping of multi-crop.""")
-    parser.add_argument('--vit_image_size', type=int, default=256, help="""image size that enters vit; 
+    parser.add_argument('--vit_image_size', type=int, default=64, help="""image size that enters vit; 
         must match with patch_size: num_patches = (vit_image_size/patch_size)**2""")
     parser.add_argument('--image_size', type=int, default=32, help="""image size of in-distibution data. 
         negative samples are first resized to image_size and then inflated to vit_image_size. This
@@ -254,7 +254,7 @@ def train_dino(args, writer):
     print(f"Student and Teacher are built: they are both {args.arch} network.")
 
     # ============ preparing loss ... ============
-    dino_loss = DINOLoss(
+    dino_loss = DINOLossNegCon(
         args.out_dim,
         args.batch_size_per_gpu,  # total number of crops = 2 global crops  + local_crops_number 
         args.warmup_teacher_temp,
@@ -448,83 +448,6 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
-class DINOLoss(nn.Module):
-    def __init__(self, out_dim, batchsize, warmup_teacher_temp, teacher_temp,
-                 warmup_teacher_temp_epochs, nepochs, student_temp=0.1,
-                 center_momentum=0.9):
-        super().__init__()
-        self.student_temp = student_temp
-        self.probs_temp = 0.1
-        self.center_momentum = center_momentum
-        self.probs_momentum = 0.998
-        self.batchsize = batchsize
-        self.register_buffer("center", torch.zeros(1, out_dim))
-        self.register_buffer("probs_pos", torch.ones(1, out_dim) / out_dim)
-        self.register_buffer("probs_neg", torch.ones(1, out_dim) / out_dim)
-        # we apply a warm up for the teacher temperature because
-        # a too high temperature makes the training instable at the beginning
-        self.teacher_temp_schedule = np.concatenate((
-            np.linspace(warmup_teacher_temp,
-                        teacher_temp, warmup_teacher_temp_epochs),
-            np.ones(nepochs - warmup_teacher_temp_epochs) * teacher_temp
-        ))
-
-    def forward(self, student_output, teacher_output, crops_freq_student, crops_freq_teacher, epoch):
-        """
-        Cross-entropy between softmax outputs of the teacher and student networks.
-        """
-        # total number of crops
-        n_crops_student = len(student_output) // self.batchsize
-        n_crops_teacher = len(teacher_output) // self.batchsize
-
-        student_out = student_output / self.student_temp
-        student_out = student_out.chunk(n_crops_student)
-        temp = self.teacher_temp_schedule[epoch]
-        teacher_probs = F.softmax((teacher_output - self.center) / temp, dim=-1)
-        teacher_out = teacher_probs.detach().chunk(n_crops_teacher)
-        out_dim = teacher_out[0].shape[-1]
-        total_loss = 0.
-        n_loss_terms = 0
-        end_idx_s = torch.cumsum(torch.tensor(crops_freq_student), 0)
-        for t in range(crops_freq_teacher[0]):  # loop over pos teacher crops
-            start_s = 0
-            for k, end_s in enumerate(end_idx_s):  # loop over datasets
-                for s in range(start_s, end_s):  # loop over student crops
-                    # pos loss
-                    if k == 0:
-                        if s == t:  # we skip cases where student and teacher operate on the same view
-                            continue
-                        loss = torch.sum(-teacher_out[t] * F.log_softmax(student_out[s], dim=-1), dim=-1)
-                        # in-dist neg loss
-                    elif k == 1:
-                        loss = 0.5 / out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
-                        # loss = 0.5/out_dim * torch.sum(-(1.-teacher_out[t]) * F.log_softmax(student_out[s], dim=-1), dim=-1)
-                        # loss = 0.5/out_dim * (1.-probs_pos) * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
-                    # aux neg loss
-                    else:
-                        loss = 0.5 / out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
-                        # loss = 0.5/out_dim * torch.sum(-(1.-teacher_out[t]) * F.log_softmax(student_out[s], dim=-1), dim=-1)
-                    total_loss += len(crops_freq_student) * loss.mean()  # scaling loss with batchsize
-                    n_loss_terms += 1
-                start_s = end_s
-        total_loss /= n_loss_terms
-        self.center = self.update_ema(teacher_output[:crops_freq_teacher[0]], self.center, self.center_momentum)
-        self.probs_pos = self.update_ema(teacher_probs[:crops_freq_teacher[0]], self.probs_pos, self.probs_momentum)
-        self.probs_neg = self.update_ema(teacher_probs[crops_freq_teacher[0]:], self.probs_neg, self.probs_momentum)
-        return total_loss
-
-    @torch.no_grad()
-    def update_ema(self, output, ema, momentum):
-        """
-        Update exponential moving aveages for teacher output.
-        """
-        batch_center = torch.sum(output, dim=0, keepdim=True)
-        dist.all_reduce(batch_center)
-        batch_center = batch_center / (len(output) * dist.get_world_size())
-
-        # ema update
-        return ema * momentum + batch_center * (1 - momentum)
-
 
 class DataAugmentation_Contrast(object):
     def __init__(self, global_crops_scale, local_crops_scale, local_crops_number, image_size, vit_image_size,
@@ -649,12 +572,13 @@ class DataAugmentation_Contrast(object):
                 crops.append(self.local_transfo(image))
             self.crops_freq_student.append(len(crops))
             n_pos_crops = len(crops)
-            # in-dist neg crops 
-            flip = random.choice([0, 1])
-            if flip:
-                crops.append(self.global_transfo1_neg(image))
-            else:
-                crops.append(self.global_transfo2_neg(image))
+            # 2 global in-dist negative crops 
+            for _ in range(2):
+                flip = random.choice([0, 1])
+                if flip:
+                    crops.append(self.global_transfo1_neg(image))
+                else:
+                    crops.append(self.global_transfo2_neg(image))
             self.crops_freq_teacher.append(len(crops) - n_pos_crops)
             for _ in range(self.local_crops_number):
                 crops.append(self.local_transfo_neg(image))
