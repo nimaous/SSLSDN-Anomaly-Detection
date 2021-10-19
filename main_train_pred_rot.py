@@ -370,12 +370,15 @@ if __name__ == '__main__':
     args = parser.parse_args()
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
+    utils.track_gpu_to_launch_training(30)# gb
+
     now = datetime.datetime.now()
     date_time = now.strftime("TBLogs_%m-%d_time_%Hh%M")
     log_folder = os.path.join(args.output_dir, date_time)
     Path(log_folder).mkdir(parents=True, exist_ok=True)
 
     if utils.is_main_process():
+        
         writer = SummaryWriter(log_folder)
 
     train_dino(args, writer)

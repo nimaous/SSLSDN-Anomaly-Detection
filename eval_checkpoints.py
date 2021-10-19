@@ -259,7 +259,7 @@ class DataAugmentation(object):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser('Evaluation with weighted k-NN on ImageNet')
+    parser = argparse.ArgumentParser('RotDouble head')
     parser.add_argument('--batch_size_per_gpu', default=32, type=int, help='Per-GPU batch-size')
     parser.add_argument('--local_view', default=False, type=bool,)
     parser.add_argument('--reduce_train', default=False , type=bool,
@@ -268,14 +268,14 @@ if __name__ == '__main__':
         help='Number of clusters to which the train samples will be reduced')     
     parser.add_argument('--knn_temperature', default=0.04, type=float,
         help='Temperature used in the voting coefficient')
-    parser.add_argument('--pretrained_weights', default='', 
+    parser.add_argument('--pretrained_weights', default='/home/adaloglo/DINO_AnoDetect/out/checkpoint.pth', 
                         type=str, help="Path to pretrained weights to evaluate.")
     parser.add_argument('--use_cuda', default=True, 
                         type=utils.bool_flag, 
                         help="Should we store the features on GPU? We recommend setting this to False if you encounter OOM")
     parser.add_argument('--arch', default='vit_small', type=str, help='Architecture')
     parser.add_argument('--patch_size', default=16, type=int, help='Patch resolution of the model.')
-    parser.add_argument('--vit_image_size', type=int, default=224, help="""image size that enters vit; 
+    parser.add_argument('--vit_image_size', type=int, default=256, help="""image size that enters vit; 
         must match with patch_size: num_patches = (vit_image_size/patch_size)**2""")
     parser.add_argument('--crops_scale', type=float, nargs='+', default=(0.9, 1.), 
                         help="""Scale range of the cropped image before resizing, relatively to the origin image. Used for large global view cropping.""")

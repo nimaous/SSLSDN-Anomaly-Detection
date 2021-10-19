@@ -32,6 +32,8 @@ from torch import nn
 import torch.distributed as dist
 from PIL import ImageFilter, ImageOps
 
+import pynvml
+
 
 
 
@@ -823,3 +825,23 @@ def multi_scale(samples, model):
     v /= 3
     v /= v.norm()
     return v
+
+
+
+
+def get_memory_free_GB(gpu_index):
+    pynvml.nvmlInit()
+    handle = pynvml.nvmlDeviceGetHandleByIndex(int(gpu_index))
+    mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+    return (mem_info.free // 1024 ** 3)
+
+def track_gpu_to_launch_training(desired_free_memory_GB, gpu_list=["0"]):
+    gpu_is_free = False
+    while not gpu_is_free:  
+        for i in gpu_list:
+            free_memory_GB = get_memory_free_GB(i)
+            if free_memory_GB>desired_free_memory_GB:
+                gpu_is_free = True
+            else:
+                print(f'Waiting to launch script... Desired mem {desired_free_memory_GB}, Free: {free_memory_GB}')
+                time.sleep(100) # sec
