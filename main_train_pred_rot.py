@@ -40,12 +40,17 @@ from data_rot_aug import DatasetRotationWrapper
 
 from main_train import get_args_parser, DataAugmentation_Contrast
 from dino_loss import  DINOLossNegCon
+from knockknock import slack_sender
+
+
 
 torchvision_archs = sorted(name for name in torchvision_models.__dict__
                            if name.islower() and not name.startswith("__")
                            and callable(torchvision_models.__dict__[name]))
 
 
+webhook_url = "https://hooks.slack.com/services/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"
+@slack_sender(webhook_url=webhook_url, channel="training_notification")
 def train_dino(args, writer):
     utils.init_distributed_mode(args)
     utils.fix_random_seeds(args.seed)
@@ -243,15 +248,11 @@ def train_dino(args, writer):
             with (Path(args.output_dir) / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
 
-        torch.set_printoptions(profile="full")
-        if epoch % 20 == 0:
-            print("probs pos", torch.topk(dino_loss.probs_pos * 100, 200)[0])
-            print("probs neg", torch.topk(dino_loss.probs_neg * 100, 200, largest=False)[0])
-        torch.set_printoptions(profile="default")
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
+    return {"Training time":total_time_str, "train_stats":train_stats }
 
 
 def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loader, data_loader_aux,
@@ -303,7 +304,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
             dino_loss_val = dino_loss(student_output, teacher_output, crops_freq_student, crops_freq_teacher, epoch)
 
             rot_loss = CE_rot(rotations_indist, rot_labels)
-            loss = dino_loss_val + 0.5*rot_loss
+            loss = dino_loss_val + rot_loss
 
         loss_val = loss.item()
         if not math.isfinite(loss_val):
@@ -353,7 +354,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
 
-    if utils_dino.is_main_process():
+    if utils.is_main_process():
         try:
             writer.add_scalar("Train loss epoch", torch.Tensor([metric_logger.meters['loss'].global_avg]), epoch)
             # KNN fit here...

@@ -30,12 +30,16 @@ from main_train import get_args_parser, DataAugmentation_Contrast
 
 from dino_loss import  DINOLossNegCon, DINOLoss_vanilla 
 
+from knockknock import slack_sender
+
 
 torchvision_archs = sorted(name for name in torchvision_models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(torchvision_models.__dict__[name]))
 
 
+webhook_url = "https://hooks.slack.com/services/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"
+@slack_sender(webhook_url=webhook_url, channel="training_notification")
 def train_dino(args, writer):
     utils.init_distributed_mode(args)
     utils.fix_random_seeds(args.seed)
