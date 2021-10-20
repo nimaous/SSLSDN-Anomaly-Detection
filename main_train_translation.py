@@ -1,16 +1,3 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
-# 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-# 
-#     http://www.apache.org/licenses/LICENSE-2.0
-# 
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 import argparse
 import datetime
 import json
@@ -35,18 +22,17 @@ from torchvision import models as torchvision_models
 
 import utils
 import vision_transformer as vits
-from vision_transformer import DINOHead, RotationHead
-from data_rot_aug import DatasetRotationWrapper
-
-from main_train import get_args_parser, DataAugmentation_Contrast
+from vision_transformer import DINOHead
 from dino_loss import  DINOLossNegCon
+from main_train import get_args_parser, train_one_epoch
+
+from roto_translation_contrast import DataAugmentation_Contrast
 from knockknock import slack_sender
-
-
 
 torchvision_archs = sorted(name for name in torchvision_models.__dict__
                            if name.islower() and not name.startswith("__")
                            and callable(torchvision_models.__dict__[name]))
+
 
 
 webhook_url = "https://hooks.slack.com/services/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"
@@ -58,21 +44,26 @@ def train_dino(args, writer):
     print("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items())))
     cudnn.benchmark = True
 
+    # ============ preparing data ... ============
+    transform = DataAugmentation_Contrast(
+        args.global_crops_scale,
+        args.local_crops_scale,
+        args.local_crops_number,
+        args.image_size,
+        args.vit_image_size,
+        aux=False
+    )
+
     transform_aux = DataAugmentation_Contrast(
         args.global_crops_scale,
         args.local_crops_scale,
         args.local_crops_number,
         args.image_size,
         args.vit_image_size,
-        aux=True)
-
-    dataset = DatasetRotationWrapper(
-        args.image_size, 
-        args.vit_image_size,
-        args.global_crops_scale, 
-        args.local_crops_scale, 
-        args.local_crops_number)
-
+        aux=True
+    )
+    
+    dataset = datasets.CIFAR100(root='./data', train=True, download=True, transform=transform)
 
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
     data_loader = torch.utils.data.DataLoader(
@@ -128,18 +119,12 @@ def train_dino(args, writer):
         print(f"Unknow architecture: {args.arch}")
 
     # multi-crop wrapper handles forward with inputs of different resolutions
-    rot_head = RotationHead(
-        embed_dim,
-        2, # out dim
-    )
-    studen_head = DINOHead(
+    student = utils.MultiCropWrapper(student, DINOHead(
         embed_dim,
         args.out_dim,
         use_bn=args.use_bn_in_head,
         norm_last_layer=args.norm_last_layer,
-    )
-
-    student = utils.MultiCropWrapper(student, studen_head, rot_head)
+    ))
     teacher = utils.MultiCropWrapper(
         teacher,
         DINOHead(embed_dim, args.out_dim, args.use_bn_in_head),
@@ -159,7 +144,7 @@ def train_dino(args, writer):
         teacher_without_ddp = teacher
     student = nn.parallel.DistributedDataParallel(student, device_ids=[args.gpu])
     # teacher and student start with the same weights
-    teacher_without_ddp.load_state_dict(student.module.state_dict(), strict=False)
+    teacher_without_ddp.load_state_dict(student.module.state_dict())
     # there is no backpropagation through the teacher, so no need for gradients
     for p in teacher.parameters():
         p.requires_grad = False
@@ -248,121 +233,17 @@ def train_dino(args, writer):
             with (Path(args.output_dir) / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
 
+        torch.set_printoptions(profile="full")
+        if epoch % 20 == 0:
+            print("probs pos", torch.topk(dino_loss.probs_pos * 100, 200)[0])
+            print("probs neg", torch.topk(dino_loss.probs_neg * 100, 200, largest=False)[0])
+        torch.set_printoptions(profile="default")
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
-    return {"Training time":total_time_str, "train_stats":train_stats }
 
 
-def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loader, data_loader_aux,
-                    optimizer, lr_schedule, wd_schedule, momentum_schedule, epoch,
-                    fp16_scaler, args, writer):
-    metric_logger = utils.MetricLogger(delimiter="  ")
-    CE_rot = torch.nn.CrossEntropyLoss()
-    header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
-    for it, (images, labels, rot_labels) in enumerate(metric_logger.log_every(data_loader, 10, header)):
-        try:
-            images_aux, _ = next(iter_aux)  # domain knowlege e.g. images of natural objects
-        except:
-            iter_aux = iter(data_loader_aux)
-            images_aux, _ = next(iter_aux)
-
-        
-        # update weight decay and learning rate according to their schedule
-        it = len(data_loader) * epoch + it  # global training iteration        
-        for i, param_group in enumerate(optimizer.param_groups):
-            param_group["lr"] = lr_schedule[it]
-            if i == 0:  # only the first group is regularized
-                param_group["weight_decay"] = wd_schedule[it]
-
-        # move images to gpu
-        images = [im.cuda(non_blocking=True) for im in images]
-        images_aux = [im.cuda(non_blocking=True) for im in images_aux]
-        in_dist_images = len(images)
-
-        # teacher and student forward passes + compute dino loss
-        with torch.cuda.amp.autocast(fp16_scaler is not None):
-            # number of crops per dataset: e.g. crops_freq_teacher = [3,1,1] => 3 x pos , 1 x in-dist neg , 1 x aux neg
-            crops_freq_teacher = data_loader.dataset.crops_freq_teacher + \
-                                 data_loader_aux.dataset.transform.crops_freq_teacher
-
-            crops_freq_student = data_loader.dataset.crops_freq_student + \
-                                 data_loader_aux.dataset.transform.crops_freq_student
-            images_pos = images[:crops_freq_student[0]]  # postives
-            images_neg = images[crops_freq_student[0]:]  # in-dist negatives (e.g. rotated view of pos sample)
-
-
-            teacher_output = teacher(images_pos[:crops_freq_teacher[0]] \
-                                     + images_neg[:crops_freq_teacher[1]] + images_aux[:crops_freq_teacher[2]])
-            
-            student_output , rotations_output  = student(images_pos + images_neg + images_aux)
-
-            rotations_indist = rotations_output[:args.batch_size_per_gpu*in_dist_images]
-
-            rot_labels = torch.cat(rot_labels, dim=0).cuda()
-            dino_loss_val = dino_loss(student_output, teacher_output, crops_freq_student, crops_freq_teacher, epoch)
-
-            rot_loss = CE_rot(rotations_indist, rot_labels)
-            loss = dino_loss_val + rot_loss
-
-        loss_val = loss.item()
-        if not math.isfinite(loss_val):
-            print("Loss is {}, stopping training".format(loss.item()), force=True)
-            sys.exit(1)
-
-        # student update
-        optimizer.zero_grad()
-        param_norms = None
-        if fp16_scaler is None:
-            loss.backward()
-            if args.clip_grad:
-                param_norms = utils.clip_gradients(student, args.clip_grad)
-            utils.cancel_gradients_last_layer(epoch, student,
-                                              args.freeze_last_layer)
-            optimizer.step()
-        else:
-            fp16_scaler.scale(loss).backward()
-            if args.clip_grad:
-                fp16_scaler.unscale_(optimizer)  # unscale the gradients of optimizer's assigned params in-place
-                param_norms = utils.clip_gradients(student, args.clip_grad)
-            utils.cancel_gradients_last_layer(epoch, student,
-                                              args.freeze_last_layer)
-            fp16_scaler.step(optimizer)
-            fp16_scaler.update()
-
-        # EMA update for the teacher
-        with torch.no_grad():
-            m = momentum_schedule[it]  # momentum parameter
-            for param_q, param_k in zip(student.module.parameters(), teacher_without_ddp.parameters()):
-                param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
-
-        # logging
-        torch.cuda.synchronize()
-        metric_logger.update(loss=loss_val)
-        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
-        metric_logger.update(wd=optimizer.param_groups[0]["weight_decay"])
-
-        if utils.is_main_process():
-            writer.add_scalar("Train loss step", loss_val, it)
-            writer.add_scalar("LR", optimizer.param_groups[0]["lr"], it)
-            writer.add_scalar("dino loss ", dino_loss_val.item(), it)
-            writer.add_scalar("rotation CE loss ", rot_loss.item(), it)
-            
-            # KNN stuff will be stored here
-
-    # gather the stats from all processes
-    metric_logger.synchronize_between_processes()
-
-    if utils.is_main_process():
-        try:
-            writer.add_scalar("Train loss epoch", torch.Tensor([metric_logger.meters['loss'].global_avg]), epoch)
-            # KNN fit here...
-        except:
-            sys.exit(1)
-
-    print("Averaged stats:", metric_logger)
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
 if __name__ == '__main__':
@@ -370,7 +251,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser('DINO', parents=[get_args_parser()])
     args = parser.parse_args()
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-
     utils.track_gpu_to_launch_training(30)# gb
 
     now = datetime.datetime.now()
@@ -379,7 +259,6 @@ if __name__ == '__main__':
     Path(log_folder).mkdir(parents=True, exist_ok=True)
 
     if utils.is_main_process():
-        
         writer = SummaryWriter(log_folder)
 
     train_dino(args, writer)

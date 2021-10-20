@@ -271,7 +271,7 @@ class DataAugmentation(object):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser('Evaluation with weighted k-NN on ImageNet')
+    parser = argparse.ArgumentParser('RotDouble head')
     parser.add_argument('--batch_size_per_gpu', default=32, type=int, help='Per-GPU batch-size')
     parser.add_argument('--local_view', default=False, type=bool,)
     parser.add_argument('--arch', default='vit_small', type=str, help='Architecture')
