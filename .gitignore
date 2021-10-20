@@ -17,4 +17,6 @@ out_eval
 out_eval/*
 out/*
 out/
+out_cifar100/
+out_cifar100/*
 *.png
