@@ -36,7 +36,7 @@ from torchvision import models as torchvision_models
 import utils
 import vision_transformer as vits
 from vision_transformer import DINOHead, RotationHead
-from data_rot_aug import DatasetRotationWrapper
+from data_rot_aug import DatasetRotationWrapper,DatasetRotationWrapperPred
 
 from main_train import get_args_parser, DataAugmentation_Contrast
 from dino_loss import  DINOLossNegCon
@@ -66,7 +66,7 @@ def train_dino(args, writer):
         args.vit_image_size,
         aux=True)
 
-    dataset = DatasetRotationWrapper(
+    dataset = DatasetRotationWrapperPred(
         args.image_size, 
         args.vit_image_size,
         args.global_crops_scale, 
@@ -130,7 +130,7 @@ def train_dino(args, writer):
     # multi-crop wrapper handles forward with inputs of different resolutions
     rot_head = RotationHead(
         embed_dim,
-        2, # out dim
+        4, # out dim
     )
     studen_head = DINOHead(
         embed_dim,
@@ -304,7 +304,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
             dino_loss_val = dino_loss(student_output, teacher_output, crops_freq_student, crops_freq_teacher, epoch)
 
             rot_loss = CE_rot(rotations_indist, rot_labels)
-            loss = dino_loss_val + rot_loss
+            loss = dino_loss_val + 4*rot_loss
 
         loss_val = loss.item()
         if not math.isfinite(loss_val):
