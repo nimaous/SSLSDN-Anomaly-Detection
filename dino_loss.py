@@ -9,13 +9,14 @@ import torch.nn.functional as F
 class DINOLossNegCon(nn.Module):
     def __init__(self, out_dim, batchsize, warmup_teacher_temp, teacher_temp,
                  warmup_teacher_temp_epochs, nepochs, student_temp=0.1,
-                 center_momentum=0.9):
+                 center_momentum=0.9, indist_only=True):
         super().__init__()
         self.student_temp = student_temp
         self.probs_temp = 0.1
         self.center_momentum = center_momentum
         self.probs_momentum = 0.998
         self.batchsize = batchsize
+        self.indist_only = indist_only
         self.register_buffer("center", torch.zeros(1, out_dim))
         self.register_buffer("probs_pos", torch.ones(1, out_dim) / out_dim)
         self.register_buffer("probs_neg", torch.ones(1, out_dim) / out_dim)
@@ -53,15 +54,16 @@ class DINOLossNegCon(nn.Module):
                         if s == t:  # we skip cases where student and teacher operate on the same view
                             continue
                         loss = torch.sum(-teacher_out[t] * F.log_softmax(student_out[s], dim=-1), dim=-1)
-                        # in-dist neg loss
-                    elif k == 1:
-                        loss = 0.5 / out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
-                        # loss = 0.5/out_dim * torch.sum(-(1.-teacher_out[t]) * F.log_softmax(student_out[s], dim=-1), dim=-1)
-                        # loss = 0.5/out_dim * (1.-probs_pos) * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
-                    # aux neg loss
                     else:
-                        loss = 0.5 / out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
-                        # loss = 0.5/out_dim * torch.sum(-(1.-teacher_out[t]) * F.log_softmax(student_out[s], dim=-1), dim=-1)
+                        if self.indist_only and k == 1:
+                            # in-dist only neg loss
+                            loss = 1.0 / out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
+                        elif (not self.indist_only) and k>=1:
+                            # applied to in-dist and aux-dist
+                            loss = 0.5 / out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
+                        else:
+                            continue
+
                     total_loss += len(crops_freq_student) * loss.mean()  # scaling loss with batchsize
                     n_loss_terms += 1
                 start_s = end_s

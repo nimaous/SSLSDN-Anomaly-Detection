@@ -324,9 +324,9 @@ if __name__ == '__main__':
     cudnn.benchmark = True
     
 
-    dataset_list = ['texture', 'cifar100', 'svhn', 'imagenet30', 'lsun', 
-                    'tiny_imagenet', 'cifar10',  'stl10', 'places365', 'places365_b']
-#     dataset_list = ['cifar10',  'places365']
+    dataset_list = ['cifar10', 'cifar100', 'svhn', 
+        'imagenet30', 'tiny_imagenet', 'lsun',  'stl10', 'places365', 'places365_b', 'texture']
+    
     num_crops_list = [1]  ## for more crops need to change augmentation 
     num_neighbour_list = [-1]
     temperature_list = [0.04] 
