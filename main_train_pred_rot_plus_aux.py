@@ -21,16 +21,12 @@ import sys
 import time
 from pathlib import Path
 
-import numpy as np
+import torch.nn as nn
 import torch
 import torch.backends.cudnn as cudnn
-import torch.distributed as dist
-import torch.nn as nn
-import torch.nn.functional as F
-import torchvision.transforms.functional as TF
-from PIL import Image
+
 from torch.utils.tensorboard import SummaryWriter
-from torchvision import datasets, transforms
+from torchvision import datasets
 from torchvision import models as torchvision_models
 
 import utils
@@ -49,8 +45,8 @@ torchvision_archs = sorted(name for name in torchvision_models.__dict__
                            and callable(torchvision_models.__dict__[name]))
 
 
-webhook_url = "https://hooks.slack.com/services/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"
-@slack_sender(webhook_url=webhook_url, channel="training_notification")
+# webhook_url = "https://hooks.slack.com/services/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"
+# @slack_sender(webhook_url=webhook_url, channel="training_notification")
 def train_dino(args, writer):
     utils.init_distributed_mode(args)
     utils.fix_random_seeds(args.seed)
@@ -168,12 +164,12 @@ def train_dino(args, writer):
     # ============ preparing loss ... ============
     dino_loss = DINOLossNegCon(
         args.out_dim,
-        args.batch_size_per_gpu, 
+        args.batch_size_per_gpu,  # total number of crops = 2 global crops  + local_crops_number 
         args.warmup_teacher_temp,
         args.teacher_temp,
         args.warmup_teacher_temp_epochs,
         args.epochs,
-        indist_only=True,
+        indist_only=False,
         aux_only=False,
     ).cuda()
 
@@ -296,10 +292,11 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
 
 
             teacher_output = teacher(images_pos[:crops_freq_teacher[0]] \
-                                     + images_neg[:crops_freq_teacher[1]])
+             + images_neg[:crops_freq_teacher[1]] + images_aux[:crops_freq_teacher[2]])
             
-            student_output , rotations_output  = student(images_pos + images_neg )
+            student_output , rotations_output  = student(images_pos + images_neg + images_aux)
 
+            # in dist rot only 
             rotations_indist = rotations_output[:args.batch_size_per_gpu*in_dist_images]
 
             rot_labels = torch.cat(rot_labels, dim=0).cuda()
@@ -373,7 +370,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
-    utils.track_gpu_to_launch_training(30)# gb
+    utils.track_gpu_to_launch_training(12)# gb
 
     now = datetime.datetime.now()
     date_time = now.strftime("TBLogs_%m-%d_time_%Hh%M")
