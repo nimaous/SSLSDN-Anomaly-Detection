@@ -37,6 +37,7 @@ from data_rot_aug import DatasetRotationWrapperPred
 from main_train import get_args_parser, DataAugmentation_Contrast
 from dino_loss import  DINOLossNegCon
 from knockknock import slack_sender
+from eval_function import eval_routine
 
 
 
@@ -384,3 +385,10 @@ if __name__ == '__main__':
         writer = SummaryWriter(log_folder)
 
     train_dino(args, writer)
+
+    if utils.is_main_process():
+        pretrained_weights = os.path.join(args.output_dir, "/checkpoint.pth")
+        eval_routine(args=args, train_dataset=args.in_dist, 
+            pretrained_weights=pretrained_weights, 
+            overwrite_args=True)
+

@@ -39,6 +39,7 @@ from vision_transformer import DINOHead
 from dino_loss import  DINOLossNegCon
 
 from knockknock import slack_sender
+from eval_function import eval_routine
 
 torchvision_archs = sorted(name for name in torchvision_models.__dict__
                            if name.islower() and not name.startswith("__")
@@ -53,6 +54,8 @@ def get_args_parser():
                         choices=['vit_tiny', 'vit_small', 'vit_base', 'xcit', 'deit_tiny', 'deit_small'],
                         help="""Name of architecture to train. For quick experiments with ViTs,
         we recommend using vit_tiny or vit_small.""")
+    parser.add_argument('--in_dist', default='cifar10', type=str,
+                        choices=['cifar10', 'cifar100', 'imagenet30'])
     parser.add_argument('--patch_size', default=8, type=int, help="""Size in pixels
         of input square patches - default 16 (for 16x16 patches). Using smaller
         values leads to better performance but requires more memory. Applies only
@@ -611,3 +614,9 @@ if __name__ == '__main__':
         writer = SummaryWriter(log_folder)
 
     train_dino(args, writer)
+
+    if utils.is_main_process():
+        pretrained_weights = os.path.join(args.output_dir, "/checkpoint.pth")
+        eval_routine(args=args, train_dataset=args.in_dist, 
+            pretrained_weights=pretrained_weights, 
+            overwrite_args=True)

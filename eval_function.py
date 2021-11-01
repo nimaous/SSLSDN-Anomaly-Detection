@@ -20,8 +20,6 @@ import pandas as pd
 import utils
 import vision_transformer as vits    
 
-from main_train import get_args_parser
-
 
 def eval_routine(args, train_dataset, pretrained_weights, overwrite_args=False):
     args.checkpoint_key="teacher"
