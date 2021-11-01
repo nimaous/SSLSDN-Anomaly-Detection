@@ -56,6 +56,7 @@ if __name__ == '__main__':
                     'tiny_imagenet',  'stl10', 'places365', 'places365_b', 'texture']
 
     num_crops_list = [1] 
+
     num_neighbour_list = [-1]
     temperature_list = [0.04] 
     

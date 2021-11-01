@@ -14,6 +14,13 @@ def rotate(x):
     x = TF.rotate(x, angle)
     return x
 
+def rand_rotate(x):
+    dict_rot = {90:1, 180:2 ,270:3}
+    angle = random.choice([90, 180, 270])
+    x = TF.rotate(x, angle)
+    return x, dict_rot[angle]
+
+
 
 class DatasetRotationWrapper(Dataset):
     """
@@ -122,3 +129,51 @@ class DatasetRotationWrapper(Dataset):
 
     def __len__(self):
         return len(self.dataset)
+
+class DatasetRotationWrapperPred(DatasetRotationWrapper):
+    """
+    returns an extra rot label: 0,1,2,3 for 0,90,180,270 rot
+    """
+    def __init__(self, image_size, vit_image_size, global_crops_scale, local_crops_scale, local_crops_number):
+        super().__init__(image_size, vit_image_size, global_crops_scale, local_crops_scale, local_crops_number)
+
+    def get_crops(self, image):
+        crops = []
+        self.crops_freq_teacher = []
+        self.crops_freq_student = []
+        angles_classes = []
+        # pos crops
+        crops.append(self.global_transfo1(image))
+        crops.append(self.global_transfo2(image))
+        angles_classes.extend([0,0])
+        
+        self.crops_freq_teacher.append(len(crops))
+        for _ in range(self.local_crops_number):
+            crops.append(self.local_transfo(image))
+            angles_classes.append(0)
+        self.crops_freq_student.append(len(crops))
+        n_pos_crops = len(crops)
+
+        # in-dist neg crops
+        
+        flip = random.choice([0, 1])
+        if flip:
+            view = self.global_transfo1(image)
+        else:
+            view = self.global_transfo2(image)
+        
+        view, angle = rand_rotate(view)
+        crops.append(view)
+        angles_classes.append(angle)
+
+        self.crops_freq_teacher.append(len(crops) - n_pos_crops)
+        for _ in range(self.local_crops_number):
+            view, angle = rand_rotate(self.local_transfo(image))
+            crops.append(view)
+            angles_classes.append(angle)
+        
+        self.crops_freq_student.append(len(crops) - n_pos_crops)
+        
+        n_neg_crops = len(crops) - n_pos_crops
+        return crops, angles_classes
+    

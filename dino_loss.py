@@ -9,18 +9,24 @@ import torch.nn.functional as F
 class DINOLossNegCon(nn.Module):
     def __init__(self, out_dim, batchsize, warmup_teacher_temp, teacher_temp,
                  warmup_teacher_temp_epochs, nepochs, student_temp=0.1,
-                 center_momentum=0.9):
+                 center_momentum=0.9, indist_only=False, aux_only=False):
         super().__init__()
         self.student_temp = student_temp
         self.probs_temp = 0.1
         self.center_momentum = center_momentum
         self.probs_momentum = 0.998
         self.batchsize = batchsize
+        
+        self.indist_only = indist_only
+        self.aux_only = aux_only
+
+        if (indist_only==aux_only) and (indist_only is True):
+            raise  AssertionError('Both indist_only and aux_only are True. Set at least one to False')
+        # combined defaults to True
+        self.combined = True if (indist_only==aux_only) and (indist_only is False) else False
+        
         self.register_buffer("center", torch.zeros(1, out_dim))
-        self.register_buffer("probs_pos", torch.ones(1, out_dim) / out_dim)
-        self.register_buffer("probs_neg", torch.ones(1, out_dim) / out_dim)
-        # we apply a warm up for the teacher temperature because
-        # a too high temperature makes the training instable at the beginning
+
         self.teacher_temp_schedule = np.concatenate((
             np.linspace(warmup_teacher_temp,
                         teacher_temp, warmup_teacher_temp_epochs),
@@ -53,22 +59,26 @@ class DINOLossNegCon(nn.Module):
                         if s == t:  # we skip cases where student and teacher operate on the same view
                             continue
                         loss = torch.sum(-teacher_out[t] * F.log_softmax(student_out[s], dim=-1), dim=-1)
-                        # in-dist neg loss
-                    elif k == 1:
-                        loss = 0.5 / out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
-                        # loss = 0.5/out_dim * torch.sum(-(1.-teacher_out[t]) * F.log_softmax(student_out[s], dim=-1), dim=-1)
-                        # loss = 0.5/out_dim * (1.-probs_pos) * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
-                    # aux neg loss
                     else:
-                        loss = 0.5 / out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
-                        # loss = 0.5/out_dim * torch.sum(-(1.-teacher_out[t]) * F.log_softmax(student_out[s], dim=-1), dim=-1)
+                        if self.indist_only and k == 1:
+                            # in-dist only neg loss
+                            loss = 1.0 / out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
+
+                        elif self.aux_only and k == 2:
+                            loss = 1.0 / out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
+
+                        # both indist and aux here (deafult behaviour)
+                        elif self.combined:
+                            loss = 0.5 / out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
+                        else:
+                            continue
+                    
                     total_loss += len(crops_freq_student) * loss.mean()  # scaling loss with batchsize
                     n_loss_terms += 1
+                    
                 start_s = end_s
         total_loss /= n_loss_terms
         self.center = self.update_ema(teacher_output[:crops_freq_teacher[0]], self.center, self.center_momentum)
-        self.probs_pos = self.update_ema(teacher_probs[:crops_freq_teacher[0]], self.probs_pos, self.probs_momentum)
-        self.probs_neg = self.update_ema(teacher_probs[crops_freq_teacher[0]:], self.probs_neg, self.probs_momentum)
         return total_loss
 
     @torch.no_grad()
@@ -224,4 +234,5 @@ class DINOLoss_classprob_v2(nn.Module):
         # ema update
         self.class_probs = self.class_probs * self.class_probs_momentum + batch_class_probs * (
                     1 - self.class_probs_momentum)
+
 

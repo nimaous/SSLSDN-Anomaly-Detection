@@ -576,13 +576,14 @@ class DataAugmentation_Contrast(object):
                 crops.append(self.local_transfo(image))
             self.crops_freq_student.append(len(crops))
             n_pos_crops = len(crops)
-            # 2 global in-dist negative crops 
-            for _ in range(2):
-                flip = random.choice([0, 1])
-                if flip:
-                    crops.append(self.global_transfo1_neg(image))
-                else:
-                    crops.append(self.global_transfo2_neg(image))
+            
+            # 1 global in-dist negative crops 
+            flip = random.choice([0, 1])
+            if flip:
+                crops.append(self.global_transfo1_neg(image))
+            else:
+                crops.append(self.global_transfo2_neg(image))            
+                    
             self.crops_freq_teacher.append(len(crops) - n_pos_crops)
             for _ in range(self.local_crops_number):
                 crops.append(self.local_transfo_neg(image))
