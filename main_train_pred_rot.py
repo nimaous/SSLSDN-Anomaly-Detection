@@ -41,6 +41,7 @@ from data_rot_aug import DatasetRotationWrapperPred
 from main_train import get_args_parser, DataAugmentation_Contrast
 from dino_loss import  DINOLossNegCon
 from knockknock import slack_sender
+from eval_function import eval_routine
 
 
 
@@ -49,10 +50,10 @@ torchvision_archs = sorted(name for name in torchvision_models.__dict__
                            and callable(torchvision_models.__dict__[name]))
 
 
-# webhook_url = "https://hooks.slack.com/services/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"
-# @slack_sender(webhook_url=webhook_url, channel="training_notification")
+webhook_url = "https://hooks.slack.com/services/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"
+@slack_sender(webhook_url=webhook_url, channel="training_notification")
 def train_dino(args, writer):
-    in_dist = 'cifar10'
+    in_dist = args.in_dist
     utils.init_distributed_mode(args)
     utils.fix_random_seeds(args.seed)
     print("git:\n  {}\n".format(utils.get_sha()))
@@ -386,3 +387,11 @@ if __name__ == '__main__':
         writer = SummaryWriter(log_folder)
 
     train_dino(args, writer)
+
+
+    if utils.is_main_process():
+        pretrained_weights = os.path.join(args.output_dir, "/checkpoint.pth")
+        eval_routine(args=args, train_dataset=args.in_dist, 
+            pretrained_weights=pretrained_weights, 
+            overwrite_args=True)
+
