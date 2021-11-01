@@ -15,7 +15,11 @@ data
 data/
 out_eval
 out_eval/*
-out_*/*
-out_*/
+out/*
+out/
+out_cifar100/
+out_cifar100/*
+results/*
+results/
 *.png
-*.csv
+*lmdb
