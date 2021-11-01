@@ -38,6 +38,8 @@ class DataAugmentation_Contrast(object):
             transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ])
 
+        translation = transforms.RandomAffine(0, translate=(0.2, 0.2))
+
         
         def rotate(x):
             angle = random.choice([90, 180, 270])
@@ -78,11 +80,10 @@ class DataAugmentation_Contrast(object):
         # neg first global crop
         self.global_transfo1_neg = transforms.Compose([
             transforms.Resize((image_size, image_size), interpolation=Image.BICUBIC),
-            #transforms.Resize((vit_image_size, vit_image_size), interpolation=Image.BICUBIC),
             transforms.RandomResizedCrop(vit_image_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             rotate,
             flip_and_color_jitter,
-            transforms.RandomAffine(0, translate=(0.3, 0.3)),
+            translation,
             utils.GaussianBlur(1.0, image_size=vit_image_size),
             normalize,
         ])
@@ -93,7 +94,7 @@ class DataAugmentation_Contrast(object):
             transforms.RandomResizedCrop(vit_image_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             rotate,
             flip_and_color_jitter,
-            transforms.RandomAffine(0, translate=(0.3, 0.3)),
+            translation,
             utils.GaussianBlur(0.1, image_size=vit_image_size),
             utils.Solarization(0.2),
             normalize,
@@ -113,7 +114,7 @@ class DataAugmentation_Contrast(object):
             #transforms.Resize((vit_image_size, vit_image_size), interpolation=Image.BICUBIC),
             transforms.RandomResizedCrop(vit_image_size//2, scale=local_crops_scale, interpolation=Image.BICUBIC),
             rotate,
-            transforms.RandomAffine(0, translate=(0.3, 0.3)),
+            translation,
             flip_and_color_jitter,
             utils.GaussianBlur(p=0.5, image_size=vit_image_size),
             normalize,
