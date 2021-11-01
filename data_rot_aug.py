@@ -1,5 +1,5 @@
 import random
-
+import os
 import torch
 import torchvision.transforms.functional as TF
 from PIL import Image
@@ -27,9 +27,12 @@ class DatasetRotationWrapper(Dataset):
     returns an extra binary label: 0 for non-rotated and 1 for rotated images
     """
 
-    def __init__(self, image_size, vit_image_size, global_crops_scale, local_crops_scale, local_crops_number):
+    def __init__(self, image_size, vit_image_size, global_crops_scale, local_crops_scale, local_crops_number,
+                    in_dist='cifar10', data_path='/home/shared/DataSets/'):
         super().__init__()
-        self.dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=None)
+
+        self.dataset = utils.get_train_dataset(in_dist, data_path)
+        
         self.create_transforms(image_size, vit_image_size, global_crops_scale, local_crops_scale, local_crops_number)
 
     def create_transforms(self, image_size, vit_image_size, global_crops_scale, local_crops_scale, local_crops_number):
@@ -134,8 +137,8 @@ class DatasetRotationWrapperPred(DatasetRotationWrapper):
     """
     returns an extra rot label: 0,1,2,3 for 0,90,180,270 rot
     """
-    def __init__(self, image_size, vit_image_size, global_crops_scale, local_crops_scale, local_crops_number):
-        super().__init__(image_size, vit_image_size, global_crops_scale, local_crops_scale, local_crops_number)
+    def __init__(self, image_size, vit_image_size, global_crops_scale, local_crops_scale, local_crops_number, in_dist='cifar10'):
+        super().__init__(image_size, vit_image_size, global_crops_scale, local_crops_scale, local_crops_number, in_dist)
 
     def get_crops(self, image):
         crops = []
@@ -174,6 +177,5 @@ class DatasetRotationWrapperPred(DatasetRotationWrapper):
         
         self.crops_freq_student.append(len(crops) - n_pos_crops)
         
-        n_neg_crops = len(crops) - n_pos_crops
         return crops, angles_classes
     

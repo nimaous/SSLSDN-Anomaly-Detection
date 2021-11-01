@@ -49,9 +49,10 @@ torchvision_archs = sorted(name for name in torchvision_models.__dict__
                            and callable(torchvision_models.__dict__[name]))
 
 
-webhook_url = "https://hooks.slack.com/services/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"
-@slack_sender(webhook_url=webhook_url, channel="training_notification")
+# webhook_url = "https://hooks.slack.com/services/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"
+# @slack_sender(webhook_url=webhook_url, channel="training_notification")
 def train_dino(args, writer):
+    in_dist = 'cifar10'
     utils.init_distributed_mode(args)
     utils.fix_random_seeds(args.seed)
     print("git:\n  {}\n".format(utils.get_sha()))
@@ -71,7 +72,8 @@ def train_dino(args, writer):
         args.vit_image_size,
         args.global_crops_scale, 
         args.local_crops_scale, 
-        args.local_crops_number)
+        args.local_crops_number,
+        in_dist=in_dist)
 
 
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
@@ -368,12 +370,11 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
 
 
 if __name__ == '__main__':
-
     parser = argparse.ArgumentParser('DINO', parents=[get_args_parser()])
     args = parser.parse_args()
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
-    utils.track_gpu_to_launch_training(30)# gb
+    #utils.track_gpu_to_launch_training(30)# gb
 
     now = datetime.datetime.now()
     date_time = now.strftime("TBLogs_%m-%d_time_%Hh%M")

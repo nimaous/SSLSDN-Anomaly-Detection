@@ -48,6 +48,7 @@ torchvision_archs = sorted(name for name in torchvision_models.__dict__
 # webhook_url = "https://hooks.slack.com/services/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"
 # @slack_sender(webhook_url=webhook_url, channel="training_notification")
 def train_dino(args, writer):
+    in_dist = 'imagenet30'
     utils.init_distributed_mode(args)
     utils.fix_random_seeds(args.seed)
     print("git:\n  {}\n".format(utils.get_sha()))
@@ -67,7 +68,8 @@ def train_dino(args, writer):
         args.vit_image_size,
         args.global_crops_scale, 
         args.local_crops_scale, 
-        args.local_crops_number)
+        args.local_crops_number,
+        in_dist=in_dist)
 
 
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)

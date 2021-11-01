@@ -32,6 +32,8 @@ from torch import nn
 import torch.distributed as dist
 from PIL import ImageFilter, ImageOps
 
+from torchvision import datasets, transforms
+
 import pynvml
 
 
@@ -845,3 +847,15 @@ def track_gpu_to_launch_training(desired_free_memory_GB, gpu_list=["0"]):
             else:
                 print(f'Waiting to launch script... Desired mem {desired_free_memory_GB}, Free: {free_memory_GB}')
                 time.sleep(100) # sec
+
+
+def get_train_dataset(in_dist, data_path='/home/shared/DataSets/', transform=None):
+    if in_dist=='cifar10':
+        return datasets.CIFAR10(root='../data', train=True, download=True, transform=transform)
+    elif in_dist=='cifar100':
+        return datasets.CIFAR100(root='../data', train=True, download=True, transform=transform)
+    elif in_dist=='imagenet30':
+        path = os.path.join(data_path, 'ImageNet30/train/')
+        return datasets.ImageFolder(root=path, transform=transform) 
+    else:
+        raise AssertionError('specify in_dist dataset')

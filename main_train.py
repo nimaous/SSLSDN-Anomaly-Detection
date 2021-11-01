@@ -144,6 +144,7 @@ def get_args_parser():
 webhook_url = "https://hooks.slack.com/services/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"
 @slack_sender(webhook_url=webhook_url, channel="training_notification")
 def train_dino(args, writer):
+    in_dist = 'imagenet30'
     utils.init_distributed_mode(args)
     utils.fix_random_seeds(args.seed)
     print("git:\n  {}\n".format(utils.get_sha()))
@@ -169,8 +170,8 @@ def train_dino(args, writer):
         aux=True,
     )
 
-    dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
-
+    dataset = utils.get_train_dataset(in_dist, data_path='/home/shared/DataSets/',
+                transform=transform)
 
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
     data_loader = torch.utils.data.DataLoader(
