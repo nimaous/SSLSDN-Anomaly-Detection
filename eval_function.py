@@ -321,7 +321,15 @@ class IndexData(Dataset):
         elif type =='texture':
              self.dataset = datasets.ImageFolder(root=args.data_path+f'dtd_test', 
                                                  transform=transform)                  
-                
+        elif type =='stanford_dogs':
+             self.dataset = datasets.ImageFolder(root=args.data_path+f'StanfordDogs/images', 
+                                                 transform=transform)     
+        elif type =='flowers102':
+             self.dataset = datasets.ImageFolder(root=args.data_path+f'flowers102', 
+                                                 transform=transform)
+        elif type =='pets':
+             self.dataset = datasets.ImageFolder(root=args.data_path+f'pets/images', 
+                                                 transform=transform)
         else:
             print(f"{type} does not exit")
 
