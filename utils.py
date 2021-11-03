@@ -859,3 +859,15 @@ def get_train_dataset(in_dist, data_path='/home/shared/DataSets/', transform=Non
         return datasets.ImageFolder(root=path, transform=transform) 
     else:
         raise AssertionError('specify in_dist dataset')
+
+
+class AuxDebiasedData(torch.utils.data.Dataset):
+    def __init__(self, path):
+        super().__init__()
+        self.data = np.load(path).transpose(0,3,1,2)
+
+    def __getitem__(self, item):
+        return torch.from_numpy(self.data[item, ...])/255.0
+
+    def len(self):
+        return self.data.shape[0]
