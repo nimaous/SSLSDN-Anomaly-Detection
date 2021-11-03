@@ -49,7 +49,6 @@ torchvision_archs = sorted(name for name in torchvision_models.__dict__
 # webhook_url = "https://hooks.slack.com/services/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"
 # @slack_sender(webhook_url=webhook_url, channel="training_notification")
 def train_dino(args, writer):
-    in_dist = 'imagenet30'
     utils.init_distributed_mode(args)
     utils.fix_random_seeds(args.seed)
     print("git:\n  {}\n".format(utils.get_sha()))
@@ -70,7 +69,7 @@ def train_dino(args, writer):
         args.global_crops_scale, 
         args.local_crops_scale, 
         args.local_crops_number,
-        in_dist=in_dist)
+        in_dist=args.in_dist)
 
 
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
@@ -294,8 +293,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
             images_neg = images[crops_freq_student[0]:]  # in-dist negatives (e.g. rotated view of pos sample)
 
 
-            teacher_output = teacher(images_pos[:crops_freq_teacher[0]] \
-             + images_neg[:crops_freq_teacher[1]] + images_aux[:crops_freq_teacher[2]])
+            teacher_output = teacher(images_pos[:crops_freq_teacher[0]])
             
             student_output , rotations_output  = student(images_pos + images_neg + images_aux)
 
@@ -373,7 +371,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
-    utils.track_gpu_to_launch_training(12)# gb
+    utils.track_gpu_to_launch_training(30)# gb
 
     now = datetime.datetime.now()
     date_time = now.strftime("TBLogs_%m-%d_time_%Hh%M")

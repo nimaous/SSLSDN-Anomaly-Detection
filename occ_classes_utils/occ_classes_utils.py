@@ -8,7 +8,7 @@ from torch import nn
 from torchvision import datasets
 from torchvision import transforms
 from vision_transformer import DINOHead
-
+import torch.backends.cudnn as cudnn
 from torchvision.transforms import InterpolationMode
 from torch.utils.data import Dataset
 

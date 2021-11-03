@@ -60,17 +60,19 @@ class DINOLossNegCon(nn.Module):
                             continue
                         loss = torch.sum(-teacher_out[t] * F.log_softmax(student_out[s], dim=-1), dim=-1)
                     else:
-                        if self.indist_only and k == 1:
-                            # in-dist only neg loss
-                            loss = 1.0 / out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
+                        try:
+                            if self.indist_only and k == 1:
+                                # in-dist only neg loss
+                                loss = 1.0 / out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
+                            elif self.aux_only and k == 2:
+                                loss = 1.0 / out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
 
-                        elif self.aux_only and k == 2:
-                            loss = 1.0 / out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
-
-                        # both indist and aux here (deafult behaviour)
-                        elif self.combined:
-                            loss = 0.5 / out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
-                        else:
+                            # both indist and aux here (deafult behaviour)
+                            elif self.combined:
+                                loss = 0.5 / out_dim * torch.sum(-F.log_softmax(student_out[s], dim=-1), dim=-1)
+                            else:
+                                continue
+                        except:
                             continue
                     
                     total_loss += len(crops_freq_student) * loss.mean()  # scaling loss with batchsize

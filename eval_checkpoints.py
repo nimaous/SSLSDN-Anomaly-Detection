@@ -3,7 +3,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 from eval_function import *
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser('RotDouble head')
+    parser = argparse.ArgumentParser('Eval script args')
     parser.add_argument('--batch_size_per_gpu', default=32, type=int, help='Per-GPU batch-size')
     parser.add_argument('--local_view', default=False, type=bool,)
     parser.add_argument('--arch', default='vit_small', type=str, help='Architecture')
@@ -48,12 +48,12 @@ if __name__ == '__main__':
     print("git:\n  {}\n".format(utils.get_sha()))
     print("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items())))
     cudnn.benchmark = True
-    
-    dataset_list_old = ['texture', 'cifar100', 'svhn', 'imagenet30', 'lsun', 
+    # excel order
+    dataset_list = ['texture', 'cifar100', 'svhn', 'imagenet30', 'lsun', 
                     'tiny_imagenet', 'cifar10',  'stl10', 'places365', 'places365_b']
-
-    dataset_list = ['cifar10', 'cifar100', 'svhn', 'imagenet30', 'tiny_imagenet', 'lsun', 
-                    'tiny_imagenet',  'stl10', 'places365', 'places365_b', 'texture']
+    # paper order
+    # dataset_list = ['cifar10', 'cifar100', 'svhn', 'imagenet30', 'tiny_imagenet', 'lsun', 
+    #                 'tiny_imagenet',  'stl10', 'places365', 'places365_b', 'texture']
 
     num_crops_list = [1] 
 

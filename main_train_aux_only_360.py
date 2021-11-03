@@ -1,16 +1,3 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
-# 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-# 
-#     http://www.apache.org/licenses/LICENSE-2.0
-# 
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 import argparse
 import datetime
 import json
@@ -147,7 +134,7 @@ def get_args_parser():
 webhook_url = "https://hooks.slack.com/services/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"
 @slack_sender(webhook_url=webhook_url, channel="training_notification")
 def train_dino(args, writer):
-    in_dist = 'imagenet30'
+    in_dist = args.in_dist
     utils.init_distributed_mode(args)
     utils.fix_random_seeds(args.seed)
     print("git:\n  {}\n".format(utils.get_sha()))
@@ -269,6 +256,7 @@ def train_dino(args, writer):
         args.teacher_temp,
         args.warmup_teacher_temp_epochs,
         args.epochs,
+        aux_only = True
     ).cuda()
 
     # ============ preparing optimizer ... ============
@@ -385,13 +373,10 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
                                  data_loader_aux.dataset.transform.crops_freq_teacher
             crops_freq_student = data_loader.dataset.transform.crops_freq_student + \
                                  data_loader_aux.dataset.transform.crops_freq_student
-            images_pos = images[:crops_freq_student[0]]  # postives
-            images_neg = images[crops_freq_student[0]:]  # in-dist negatives (e.g. rotated view of pos sample)
-            
+            images_pos = images[:crops_freq_student[0]]  # positives
 
             teacher_output = teacher(images_pos[:crops_freq_teacher[0]] )
-            # student_output = student(images_pos + images_neg)
-            student_output = student(images_pos + images_neg + images_aux)
+            student_output = student(images_pos + images_aux)
 
             loss = dino_loss(student_output, teacher_output, crops_freq_student, crops_freq_teacher, epoch)
 
@@ -461,6 +446,8 @@ class DataAugmentation_Contrast(object):
     def __init__(self, global_crops_scale, local_crops_scale, local_crops_number, image_size, vit_image_size,
                  aux=False):
         self.aux = aux
+        rand_rotate360 = transforms.RandomRotation((0,359))
+
         flip_and_color_jitter = transforms.Compose([
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomApply(
@@ -488,7 +475,7 @@ class DataAugmentation_Contrast(object):
         # neg no crop
         self.no_transfo_neg = transforms.Compose([
             transforms.Resize((vit_image_size, vit_image_size), interpolation=Image.BICUBIC),
-            rotate,
+            rand_rotate360,
             normalize,
         ])
         # first global crop
@@ -515,7 +502,7 @@ class DataAugmentation_Contrast(object):
             transforms.Resize((image_size, image_size), interpolation=Image.BICUBIC),
             # transforms.Resize((vit_image_size, vit_image_size), interpolation=Image.BICUBIC),
             transforms.RandomResizedCrop(vit_image_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
-            rotate,
+            rand_rotate360,
             flip_and_color_jitter,
             utils.GaussianBlur(1.0, image_size=vit_image_size),
             normalize,
@@ -525,7 +512,7 @@ class DataAugmentation_Contrast(object):
             transforms.Resize((image_size, image_size), interpolation=Image.BICUBIC),
             # transforms.Resize((vit_image_size, vit_image_size), interpolation=Image.BICUBIC),
             transforms.RandomResizedCrop(vit_image_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
-            rotate,
+            rand_rotate360,
             flip_and_color_jitter,
             utils.GaussianBlur(0.1, image_size=vit_image_size),
             utils.Solarization(0.2),
@@ -545,7 +532,7 @@ class DataAugmentation_Contrast(object):
             transforms.Resize((image_size, image_size), interpolation=Image.BICUBIC),
             # transforms.Resize((vit_image_size, vit_image_size), interpolation=Image.BICUBIC),
             transforms.RandomResizedCrop(vit_image_size // 2, scale=local_crops_scale, interpolation=Image.BICUBIC),
-            rotate,
+            rand_rotate360,
             # TF.vflip,
             flip_and_color_jitter,
             utils.GaussianBlur(p=0.5, image_size=vit_image_size),
@@ -603,7 +590,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser('DINO', parents=[get_args_parser()])
     args = parser.parse_args()
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    utils.track_gpu_to_launch_training(30)# gb
+    utils.track_gpu_to_launch_training(25)# gb
 
     now = datetime.datetime.now()
     date_time = now.strftime("TBLogs_%m-%d_time_%Hh%M")
