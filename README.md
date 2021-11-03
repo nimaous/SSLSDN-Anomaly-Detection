@@ -16,7 +16,7 @@ python -m torch.distributed.launch --master_port 8998 --nproc_per_node=4 main_tr
 
 ### Eval
 ```
-python -m torch.distributed.launch --master_port 8993 --nproc_per_node=2 eval_checkpoints.py --train_dataset=cifar10 --pretrained_weights=/home/shared/OOD/rot_pred/rot_pred_4_classes/checkpoint.pth   --extra_tag=rotpred_exp1 --in_dist=cifar10
+python -m torch.distributed.launch --master_port 8993 --nproc_per_node=1 eval_checkpoints.py --train_dataset=imagenet30 --pretrained_weights=../imagnet30_pred_rot4_wrot1_1_neg_glob_views_tt_0.04/checkpoint.pth   --extra_tag=rotpred_exp1 
 
 
 ```
@@ -38,7 +38,7 @@ python -m occupied_classes
 ### test command
 
 ```
-python -m torch.distributed.launch --master_port 8992 --nproc_per_node=1 main_train_pred_rot.py --arch vit_small --epochs=10 --batch_size_per_gpu=3 --out_dim=4096 --lr=0.004 --warmup_epochs=5 --weight_decay=0.04 --weight_decay_end=0.4 --local_crops_number=2 --local_crops_scale 0.15 0.4 --patch_size=4 --vit_image_size=64  --output_dir ./test_out --in_dist=cifar10
+python -m torch.distributed.launch --master_port 8991 --nproc_per_node=1 main_train_pred_rot_plus_aux.py --arch vit_small --epochs=10 --batch_size_per_gpu=3 --out_dim=4096 --lr=0.004 --warmup_epochs=5 --weight_decay=0.04 --weight_decay_end=0.4 --local_crops_number=2 --local_crops_scale 0.15 0.4 --patch_size=4 --vit_image_size=64  --output_dir ./test_out --in_dist=cifar10
 ```
 
 

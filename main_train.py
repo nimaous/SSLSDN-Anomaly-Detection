@@ -387,12 +387,12 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
                                  data_loader_aux.dataset.transform.crops_freq_student
             images_pos = images[:crops_freq_student[0]]  # postives
             images_neg = images[crops_freq_student[0]:]  # in-dist negatives (e.g. rotated view of pos sample)
-            # teacher_output = teacher(images_pos[:crops_freq_teacher[0]] + images_neg[:crops_freq_teacher[1]])
-            teacher_output = teacher(images_pos[:crops_freq_teacher[0]] \
-                                     + images_neg[:crops_freq_teacher[1]] + images_aux[:crops_freq_teacher[2]])
+            
+
+            teacher_output = teacher(images_pos[:crops_freq_teacher[0]] )
             # student_output = student(images_pos + images_neg)
             student_output = student(images_pos + images_neg + images_aux)
-            # loss = dino_loss(student_output, teacher_output, crops_freq_student[:2], crops_freq_teacher[:2], epoch)
+
             loss = dino_loss(student_output, teacher_output, crops_freq_student, crops_freq_teacher, epoch)
 
         loss_val = loss.item()

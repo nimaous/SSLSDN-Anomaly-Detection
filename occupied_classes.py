@@ -11,22 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# python -m torch.distributed.launch --master_port 8993 --nproc_per_node=4 eval_checkpoints.py --train_dataset=cifar10 --pretrained_weights=checkpoints/... --extra_tag=InDistNeg
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import argparse
-import torch.distributed as dist
 import torch.backends.cudnn as cudnn
-from sklearn.metrics import roc_auc_score
-import pandas as pd
 import utils
 
 from occ_classes_utils import *
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Occupied Classes')
-    parser.add_argument('--batch_size_per_gpu', default=1000, type=int, help='Per-GPU batch-size')
+    parser.add_argument('--batch_size_per_gpu', default=200, type=int, help='Per-GPU batch-size')
     parser.add_argument('--local_view', default=False, type=bool, )
     parser.add_argument('--arch', default='vit_small', type=str, help='Architecture')
     parser.add_argument('--patch_size', default=16, type=int, help='Patch resolution of the model.')
@@ -39,7 +35,7 @@ if __name__ == '__main__':
     parser.add_argument('--crops_number', type=int, default=1,
                         help="""Number of local views to generate. Set this parameter to 0 to disable multi-crop training.""")
 
-    parser.add_argument('--pretrained_weights', default='/home/shared/OOD/checkpoints/cifar10/256_16_aux_v3_NegContrast/checkpoint.pth',
+    parser.add_argument('--pretrained_weights', default='/home/shared/OOD/checkpoints/cifar10/No_Negs/out_0.08_0.09_500/checkpoint.pth',
                         type=str, help="Path to pretrained weights to evaluate.")
     parser.add_argument('--pretrained_out_dim', default=4096,
                         type=int, help="Pretrained DINO classes used on ssl pretraining.")
