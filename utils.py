@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) XXXXXXXXXX
 # 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,13 +31,6 @@ import torch
 from torch import nn
 import torch.distributed as dist
 from PIL import ImageFilter, ImageOps
-
-from torchvision import datasets, transforms
-
-import pynvml
-
-
-
 
 
 class GaussianBlur(object):
@@ -75,27 +68,16 @@ class Solarization(object):
             return img
 
 
-def load_pretrained_weights(model, pretrained_weights, checkpoint_key, model_name, patch_size, remove_head=True):
+def load_pretrained_weights(model, pretrained_weights, checkpoint_key, model_name, patch_size):
     if os.path.isfile(pretrained_weights):
         state_dict = torch.load(pretrained_weights, map_location="cpu")
         if checkpoint_key is not None and checkpoint_key in state_dict:
             print(f"Take key {checkpoint_key} in provided checkpoint dict")
             state_dict = state_dict[checkpoint_key]
-            if not remove_head:
-                msg = model.load_state_dict(state_dict, strict=False)
-                print('Pretrained weights found at {} and loaded with msg: {}'.format(pretrained_weights, msg))
-                return
-
-            print('Removing DINO head weights...')
-            for param_tensor in list(state_dict.keys()):
-                if 'head' in param_tensor:
-                    state_dict.pop(param_tensor)
-
-
-            # remove `module.` prefix
-            state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
-            # remove `backbone.` prefix induced by multicrop wrapper
-            state_dict = {k.replace("backbone.", ""): v for k, v in state_dict.items()}
+        # remove `module.` prefix
+        state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+        # remove `backbone.` prefix induced by multicrop wrapper
+        state_dict = {k.replace("backbone.", ""): v for k, v in state_dict.items()}
         msg = model.load_state_dict(state_dict, strict=False)
         print('Pretrained weights found at {} and loaded with msg: {}'.format(pretrained_weights, msg))
     else:
@@ -109,6 +91,16 @@ def load_pretrained_weights(model, pretrained_weights, checkpoint_key, model_nam
             url = "dino_vitbase16_pretrain/dino_vitbase16_pretrain.pth"
         elif model_name == "vit_base" and patch_size == 8:
             url = "dino_vitbase8_pretrain/dino_vitbase8_pretrain.pth"
+        elif model_name == "xcit_small_12_p16":
+            url = "dino_xcit_small_12_p16_pretrain/dino_xcit_small_12_p16_pretrain.pth"
+        elif model_name == "xcit_small_12_p8":
+            url = "dino_xcit_small_12_p8_pretrain/dino_xcit_small_12_p8_pretrain.pth"
+        elif model_name == "xcit_medium_24_p16":
+            url = "dino_xcit_medium_24_p16_pretrain/dino_xcit_medium_24_p16_pretrain.pth"
+        elif model_name == "xcit_medium_24_p8":
+            url = "dino_xcit_medium_24_p8_pretrain/dino_xcit_medium_24_p8_pretrain.pth"
+        elif model_name == "resnet50":
+            url = "dino_resnet50_pretrain/dino_resnet50_pretrain.pth"
         if url is not None:
             print("Since no pretrained weights have been provided, we load the reference pretrained DINO weights.")
             state_dict = torch.hub.load_state_dict_from_url(url="https://dl.fbaipublicfiles.com/dino/" + url)
@@ -588,13 +580,12 @@ class MultiCropWrapper(nn.Module):
     concatenate all the output features and run the head forward on these
     concatenated features.
     """
-    def __init__(self, backbone, head, head_aux = None):
+    def __init__(self, backbone, head):
         super(MultiCropWrapper, self).__init__()
         # disable layers dedicated to ImageNet labels classification
         backbone.fc, backbone.head = nn.Identity(), nn.Identity()
         self.backbone = backbone
         self.head = head
-        self.head_aux = head_aux
 
 
     def forward(self, x):
@@ -608,7 +599,6 @@ class MultiCropWrapper(nn.Module):
         for end_idx in idx_crops:
             batch_idx = sort_idx[start_idx:end_idx]  # The indices of tensors of this shape
             _out = self.backbone(torch.cat([x[i] for i in batch_idx]))   # Batch them together
-            
             # The output is a tuple with XCiT model. See:
             # https://github.com/facebookresearch/xcit/blob/master/xcit.py#L404-L405
             if isinstance(_out, tuple):
@@ -618,15 +608,7 @@ class MultiCropWrapper(nn.Module):
             output.index_copy_(0, batch_idx.cuda(), _out)
             start_idx = end_idx
         # Run the head forward on the concatenated features.
-        final_out = self.head(torch.cat(torch.unbind(output)))
-
-        if self.head_aux is not None:
-            # stack crops in dim=1 so at to have [batch, crops, out_dim]
-            aux_out = self.head_aux(torch.cat(torch.unbind(output) , dim=0) ) 
-            return final_out, aux_out 
-        
-        return final_out
-
+        return self.head(torch.cat(torch.unbind(output)))
 
 
 def get_params_groups(model):
@@ -827,47 +809,3 @@ def multi_scale(samples, model):
     v /= 3
     v /= v.norm()
     return v
-
-
-
-
-def get_memory_free_GB(gpu_index):
-    pynvml.nvmlInit()
-    handle = pynvml.nvmlDeviceGetHandleByIndex(int(gpu_index))
-    mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-    return (mem_info.free // 1024 ** 3)
-
-def track_gpu_to_launch_training(desired_free_memory_GB, gpu_list=["0"]):
-    gpu_is_free = False
-    while not gpu_is_free:  
-        for i in gpu_list:
-            free_memory_GB = get_memory_free_GB(i)
-            if free_memory_GB>desired_free_memory_GB:
-                gpu_is_free = True
-            else:
-                print(f'Waiting to launch script... Desired mem {desired_free_memory_GB}, Free: {free_memory_GB}')
-                time.sleep(100) # sec
-
-
-def get_train_dataset(in_dist, data_path='/home/shared/DataSets/', transform=None):
-    if in_dist=='cifar10':
-        return datasets.CIFAR10(root='../data', train=True, download=True, transform=transform)
-    elif in_dist=='cifar100':
-        return datasets.CIFAR100(root='../data', train=True, download=True, transform=transform)
-    elif in_dist=='imagenet30':
-        path = os.path.join(data_path, 'ImageNet30/train/')
-        return datasets.ImageFolder(root=path, transform=transform) 
-    else:
-        raise AssertionError('specify in_dist dataset')
-
-
-class AuxDebiasedData(torch.utils.data.Dataset):
-    def __init__(self, path):
-        super().__init__()
-        self.data = np.load(path).transpose(0,3,1,2)
-
-    def __getitem__(self, item):
-        return torch.from_numpy(self.data[item, ...])/255.0
-
-    def len(self):
-        return self.data.shape[0]
