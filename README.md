@@ -41,5 +41,16 @@ python -m occupied_classes
 python -m torch.distributed.launch --master_port 8990 --nproc_per_node=1 main_dino_defaulImgContrast.py --arch vit_small --epochs=10 --batch_size_per_gpu=3 --out_dim=4096 --lr=0.004 --warmup_epochs=5 --weight_decay=0.04 --weight_decay_end=0.4 --local_crops_number=2 --local_crops_scale 0.15 0.4 --patch_size=4 --vit_image_size=64  --output_dir ./test_out --in_dist=cifar10
 ```
 
+### Cite
 
 
+```
+@inproceedings{rafiee2022self,
+  title={Self-Supervised Anomaly Detection by Self-Distillation and Negative Sampling},
+  author={Rafiee, Nima and Gholamipoor, Rahil and Adaloglou, Nikolas and Jaxy, Simon and Ramakers, Julius and Kollmann, Markus},
+  booktitle={Artificial Neural Networks and Machine Learning--ICANN 2022: 31st International Conference on Artificial Neural Networks, Bristol, UK, September 6--9, 2022, Proceedings; Part IV},
+  pages={459--470},
+  year={2022},
+  organization={Springer Nature Switzerland Cham}
+}
+```
