@@ -27,11 +27,11 @@ python -m torch.distributed.launch --master_port 8993 --nproc_per_node=1 eval_ch
 
 
 
-### Visualize occupied classes
+<!-- ### Visualize occupied classes
 check args first ...
 ```
 python -m occupied_classes
-```
+``` -->
 
 
 
