@@ -1,4 +1,4 @@
-# DINO_AnoDetect
+# self-supervised anomaly detection by self-distillation and negative sampling
 
 
 ### Best results so far
